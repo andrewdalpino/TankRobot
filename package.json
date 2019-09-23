@@ -1,0 +1,34 @@
+{
+    "private": true,
+    "scripts": {
+        "dev": "npm run development",
+        "development": "cross-env NODE_ENV=development node_modules/webpack/bin/webpack.js --progress --hide-modules",
+        "watch": "npm run development -- --watch",
+        "prod": "npm run production",
+        "production": "cross-env NODE_ENV=production node_modules/webpack/bin/webpack.js --no-progress --hide-modules"
+    },
+    "devDependencies": {
+        "@babel/core": "^7.5.5",
+        "@babel/preset-env": "^7.5.5",
+        "@fortawesome/fontawesome-free": "^5.10.1",
+        "axios": "^0.18",
+        "babel-loader": "^8.0.6",
+        "bulma": "^0.7.5",
+        "bulma-slider": "^2.0.0",
+        "cross-env": "^5.1",
+        "css-loader": "^2.1.1",
+        "file-loader": "^4.2.0",
+        "mini-css-extract-plugin": "^0.8.0",
+        "node-sass": "^4.12.0",
+        "optimize-css-assets-webpack-plugin": "^5.0.3",
+        "sass-loader": "^7.2.0",
+        "vue": "^2.6.8",
+        "vue-axios": "^2.1.4",
+        "vue-loader": "^15.7.1",
+        "vue-router": "^3.1.2",
+        "vue-style-loader": "^4.1.2",
+        "vue-template-compiler": "^2.6.10",
+        "webpack": "^4.39.2",
+        "webpack-cli": "^3.3.6"
+    }
+}
