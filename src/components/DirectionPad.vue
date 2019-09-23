@@ -1,5 +1,6 @@
 <template>
     <div class="container">
+        <h3 class="label">Movement Direction</h3>
         <div class="field has-text-centered">
             <a class="button is-large is-primary" @click="forward()">
                 <span class="icon">
@@ -44,10 +45,11 @@
     import bus from '../bus';
 
     export default {
-        data() {
-            return {
-                //
-            };
+        props: {
+            tank: {
+                type: Object,
+                required: true,
+            },
         },
         methods: {
             forward() {
@@ -87,19 +89,30 @@
                 });
             },
             go() {
-                this.$http.put('/movement/go').catch((error) => {
+                this.$http.put('/movement/go').then((response) => {
+                    bus.$emit('going');
+                }).catch((error) => {
                     bus.$emit('communication-error', {
                         error,
                     });
                 });
             },
             stop() {
-                this.$http.put('/movement/stop').catch((error) => {
+                this.$http.put('/movement/stop').then((response) => {
+                    bus.$emit('stopping');
+                }).catch((error) => {
                     bus.$emit('communication-error', {
                         error,
                     });
                 });
             },
+        },
+        created() {
+            bus.$on('throttle-set', (payload) => {
+                if (!this.tank.stopped) {
+                    this.go();
+                }
+            });
         },
     }
 </script>

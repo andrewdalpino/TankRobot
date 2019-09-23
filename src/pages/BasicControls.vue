@@ -1,8 +1,8 @@
 <template>
     <section class="section">
-        <h1 class="title">Basic Controls</h1>
-        <direction-pad></direction-pad>
-        <speed-control :tank="tank"></speed-control>
+        <h1 class="title">Manual Controls</h1>
+        <direction-pad :tank="tank"></direction-pad>
+        <throttle :tank="tank"></throttle>
     </section>
 </template>
 

@@ -5,7 +5,7 @@
             <router-view :tank="tank"></router-view>
         </main>
         <communication-error></communication-error>
-        <audio id="plucky" src="/plucky.ogg"></audio>
+        <audio id="plucky" src="plucky.ogg"></audio>
     </div>
 </template>
 
@@ -16,7 +16,8 @@
         data() {
             return {
                 tank: {
-                    speed: 250,
+                    throttle: 750,
+                    stopped: true,
                 },
             };
         },
@@ -29,8 +30,16 @@
                 });
             });
 
-            bus.$on('movement-speed-set', (payload) => {
-                this.tank.speed = payload.speed;
+            bus.$on('throttle-set', (payload) => {
+                this.tank.throttle = payload.throttle;
+            });
+
+            bus.$on('going', (payload) => {
+                this.tank.stopped = false;
+            });
+
+            bus.$on('stopping', (payload) => {
+                this.tank.stopped = true;
             });
         },
     }

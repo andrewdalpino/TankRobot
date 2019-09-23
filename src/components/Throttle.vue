@@ -1,10 +1,10 @@
 <template>
     <div class="container">
-        <h3 class="label">Movement Speed</h3>
+        <h3 class="label">Throttle</h3>
         <div class="field">
             <div class="control">
-                <label for="speed">{{ speed }}</label>
-                <input id="speed" class="slider is-fullwidth is-info" type="range" min="250" max="1000" step="1" v-model="speed" @change="setSpeed()">
+                <label for="throttle">{{ throttle }}</label>
+                <input id="throttle" class="slider is-fullwidth is-large is-info" type="range" min="250" max="1000" step="1" v-model="throttle" @change="setThrottle()">
             </div>
         </div>
     </div>
@@ -16,7 +16,7 @@
     export default {
         data() {
             return {
-                speed: this.tank.speed,
+                throttle: this.tank.throttle,
             };
         },
         props: {
@@ -26,12 +26,12 @@
             },
         },
         methods: {
-            setSpeed() {
-                this.$http.put('/movement/speed', {
-                    speed: this.speed,
+            setThrottle() {
+                this.$http.put('/throttle', {
+                    throttle: this.throttle,
                 }).then((response) => {
-                    bus.$emit('movement-speed-set', {
-                        speed: this.speed,
+                    bus.$emit('throttle-set', {
+                        throttle: this.throttle,
                     });
                 }).catch((error) => {
                     bus.$emit('communication-error', {

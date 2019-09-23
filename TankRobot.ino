@@ -16,13 +16,14 @@
 #define HTTP_UNPROCESSABLE_ENTITY 422
 
 #define MOTOR_A_DIRECTION_PIN 0
-#define MOTOR_A_SPEED_PIN 5
+#define MOTOR_A_THROTTLE_PIN 5
 #define MOTOR_B_DIRECTION_PIN 2
-#define MOTOR_B_SPEED_PIN 4
+#define MOTOR_B_THROTTLE_PIN 4
 #define FORWARD 1
 #define REVERSE 0
-#define MIN_SPEED 250
-#define MAX_SPEED 1000
+#define MIN_THROTTLE 250
+#define MAX_THROTTLE 1000
+#define DEFAULT_THROTTLE 750
 
 #define I2C_SDA_PIN 12
 #define I2C_SCL_PIN 14
@@ -45,10 +46,14 @@ const IPAddress subnet(255,255,255,0);
 char* _ssid = "Kirby The Tank Robot";
 char* _password = "KeepSummerSafe";
 
-unsigned int _speed = MIN_SPEED;
+unsigned int _throttle = DEFAULT_THROTTLE;
+bool _stopped = true;
 
 MPU6050 mpu(MPU_ADDRESS);
 
+Quaternion q;
+VectorInt16 aa, aaReal, aaWorld;
+VectorFloat gravity;
 uint16_t _dmp_packet_size;
 uint8_t _dmp_fifo_buffer[64];
 bool _dmp_ready = false;
@@ -62,12 +67,6 @@ void ICACHE_RAM_ATTR dmpDataReady();
  */
 void setup() {
   Serial.begin(SERIAL_BAUD);
-
-  if (SPIFFS.begin()) {
-    Serial.println("SPIFFS mounted successfully");
-  } else {
-    Serial.println("Failed to mount SPIFFS");
-  }
   
   WiFi.softAPConfig(ip, NULL, subnet);
   WiFi.softAP(_ssid, _password, AP_CHANNEL, HIDDEN_SSID, MAX_CONNECTIONS);
@@ -80,12 +79,19 @@ void setup() {
   Serial.print("MAC Address: ");
   Serial.println(WiFi.softAPmacAddress());
 
+  if (SPIFFS.begin()) {
+    Serial.println("SPIFFS mounted successfully");
+  } else {
+    Serial.println("Failed to mount SPIFFS");
+  }
+
   server.serveStatic("/", SPIFFS, "/index.html");
-  server.serveStatic("/settings", SPIFFS, "/index.html");
   server.serveStatic("/app.js", SPIFFS, "/app.js"); 
   server.serveStatic("/app.css", SPIFFS, "/app.css"); 
   server.serveStatic("/fa-solid-900.woff", SPIFFS, "/fa-solid-900.woff");
   server.serveStatic("/fa-solid-900.woff2", SPIFFS, "/fa-solid-900.woff2");
+  server.serveStatic("/app-icon-small.png", SPIFFS, "/app-icon-small.png");
+  server.serveStatic("/app-icon-large.png", SPIFFS, "/app-icon-large.png");
   server.serveStatic("/plucky.ogg", SPIFFS, "/plucky.ogg");
   server.on("/api/status", HTTP_GET, handleStatus);
   server.on("/api/direction/forward", HTTP_PUT, handleForward);
@@ -94,7 +100,7 @@ void setup() {
   server.on("/api/direction/right", HTTP_PUT, handleRight);
   server.on("/api/movement/go", HTTP_PUT, handleGo);
   server.on("/api/movement/stop", HTTP_PUT, handleStop);
-  server.on("/api/movement/speed", HTTP_PUT, handleSetSpeed);
+  server.on("/api/throttle", HTTP_PUT, handleSetThrottle);
   server.onNotFound(handleNotFound);
 
   server.begin();
@@ -103,12 +109,11 @@ void setup() {
   Serial.println(HTTP_PORT);
 
   pinMode(MOTOR_A_DIRECTION_PIN, OUTPUT);
-  pinMode(MOTOR_A_SPEED_PIN, OUTPUT);
+  pinMode(MOTOR_A_THROTTLE_PIN, OUTPUT);
 
   pinMode(MOTOR_B_DIRECTION_PIN, OUTPUT);
-  pinMode(MOTOR_B_SPEED_PIN, OUTPUT);
+  pinMode(MOTOR_B_THROTTLE_PIN, OUTPUT);
 
-  forward();
   stop();
 
   Serial.println("Motors initialized");
@@ -147,6 +152,20 @@ void setup() {
  * Main event loop.
  */
 void loop() {
+  if (_dmp_ready) {
+    uint8_t mpu_int_status = mpu.getIntStatus();
+
+    if (mpu_int_status & 0x10) {
+      mpu.resetFIFO();
+    }
+
+    if (mpu_int_status & 0x02) {
+      updatePosition();
+    }
+
+    _dmp_ready = false;
+  }
+
   server.handleClient();
 }
 
@@ -154,10 +173,11 @@ void loop() {
  * Handle the status request.
  */
 void handleStatus() {
-  StaticJsonDocument<500> doc;
-  char buffer[500];
+  StaticJsonDocument<200> doc;
+  char buffer[200];
 
-  doc["speed"] = _speed;
+  doc["throttle"] = _throttle;
+  doc["stopped"] = _stopped;
   
   serializeJson(doc, buffer);
 
@@ -221,18 +241,18 @@ void handleStop() {
 /**
  * Handle the set speed request.
  */
-void handleSetSpeed() {
-  StaticJsonDocument<500> doc;
+void handleSetThrottle() {
+  StaticJsonDocument<200> doc;
 
   deserializeJson(doc, server.arg("plain"));
 
-  if (!doc.containsKey("speed")) {
+  if (!doc.containsKey("throttle")) {
     server.send(HTTP_UNPROCESSABLE_ENTITY);
 
     return;
   }
 
-  setSpeed(doc["speed"]);
+  setThrottle(doc["throttle"]);
 
   server.send(HTTP_OK);
 }
@@ -280,25 +300,52 @@ void reverse() {
  * Engage the motors and move in a direction at a particular speed.
  */
 void go() {
-  analogWrite(MOTOR_A_SPEED_PIN, _speed);
-  analogWrite(MOTOR_B_SPEED_PIN, _speed);
+  analogWrite(MOTOR_A_THROTTLE_PIN, _throttle);
+  analogWrite(MOTOR_B_THROTTLE_PIN, _throttle);
+
+  _stopped = false;
 }
 
 /**
  * Disengage the motors and come to a complete stop.
  */
 void stop() {
-  analogWrite(MOTOR_A_SPEED_PIN, 0);
-  analogWrite(MOTOR_B_SPEED_PIN, 0);
+  analogWrite(MOTOR_A_THROTTLE_PIN, 0);
+  analogWrite(MOTOR_B_THROTTLE_PIN, 0);
+
+  _stopped = true;
 }
 
 /**
- * Set the speed of the motors.
+ * Actuate the throttle of the motors.
  * 
  * @param int speed
  */
-void setSpeed(int speed) {
-  _speed = max(MIN_SPEED, min(speed, MAX_SPEED)); 
+void setThrottle(int throttle) {
+  _throttle = max(MIN_THROTTLE, min(throttle, MAX_THROTTLE)); 
+}
+
+/**
+ * MPU interrupt callback to signal DMP data is ready.
+ */
+void dmpDataReady() {
+  _dmp_ready = true;
+}
+
+void updatePosition() {
+  uint16_t fifo_count = mpu.getFIFOCount();
+
+  while (fifo_count >= _dmp_packet_size) {
+    mpu.getFIFOBytes(_dmp_fifo_buffer, _dmp_packet_size);
+
+    fifo_count -= _dmp_packet_size;
+  }
+
+  mpu.dmpGetQuaternion(&q, _dmp_fifo_buffer);
+  mpu.dmpGetAccel(&aa, _dmp_fifo_buffer);
+  mpu.dmpGetGravity(&gravity, &q);
+  mpu.dmpGetLinearAccel(&aaReal, &aa, &gravity);
+  mpu.dmpGetLinearAccelInWorld(&aaWorld, &aaReal, &q);
 }
 
 /**
@@ -308,11 +355,4 @@ void checkTether() {
   if (WiFi.softAPgetStationNum() == 0) {
     stop();
   }
-}
-
-/**
- * MPU interrupt callback to signal DMP data is ready.
- */
-void dmpDataReady() {
-  _dmp_ready = true;
 }
