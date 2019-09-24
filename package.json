@@ -8,9 +8,9 @@
         "production": "cross-env NODE_ENV=production node_modules/webpack/bin/webpack.js --no-progress --hide-modules"
     },
     "devDependencies": {
-        "@babel/core": "^7.5.5",
-        "@babel/preset-env": "^7.5.5",
-        "@fortawesome/fontawesome-free": "^5.10.1",
+        "@babel/core": "^7.6.2",
+        "@babel/preset-env": "^7.6.2",
+        "@fortawesome/fontawesome-free": "^5.11.2",
         "axios": "^0.18",
         "babel-loader": "^8.0.6",
         "bulma": "^0.7.5",
@@ -30,5 +30,8 @@
         "vue-template-compiler": "^2.6.10",
         "webpack": "^4.39.2",
         "webpack-cli": "^3.3.6"
+    },
+    "dependencies": {
+        "vue-native-websocket": "^2.0.13"
     }
 }

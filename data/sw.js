@@ -6,6 +6,8 @@ self.addEventListener('install', function(event) {
             '/app.css',
             '/fa-solid-900.woff',
             '/fa-solid-900.woff2',
+            '/app-icon-large.png',
+            '/app-icon-small.png',
             '/plucky.ogg',
             '/manifest.json',
         ]);

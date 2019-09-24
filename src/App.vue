@@ -1,6 +1,6 @@
 <template>
     <div>
-        <main-nav></main-nav>
+        <main-nav :tank="tank"></main-nav>
         <main>
             <router-view :tank="tank"></router-view>
         </main>
@@ -16,8 +16,10 @@
         data() {
             return {
                 tank: {
-                    throttle: 750,
+                    throttle: 625,
+                    direction: 'forward',
                     stopped: true,
+                    battery_level: 1.0,
                 },
             };
         },
@@ -30,11 +32,23 @@
                 });
             });
 
+            this.$options.sockets.onmessage = (event) => {
+                let data = JSON.parse(event.data);
+
+                switch (data.name) {
+                    case 'battery-update':
+                        this.tank.battery_level = data.battery_level;
+
+                        break;
+                }
+            }
+
             bus.$on('throttle-set', (payload) => {
                 this.tank.throttle = payload.throttle;
             });
 
-            bus.$on('going', (payload) => {
+            bus.$on('moving', (payload) => {
+                this.tank.direction = payload.direction;
                 this.tank.stopped = false;
             });
 

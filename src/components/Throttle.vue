@@ -2,9 +2,9 @@
     <div class="container">
         <h3 class="label">Throttle</h3>
         <div class="field">
-            <div class="control">
-                <label for="throttle">{{ throttle }}</label>
-                <input id="throttle" class="slider is-fullwidth is-large is-info" type="range" min="250" max="1000" step="1" v-model="throttle" @change="setThrottle()">
+            <div class="control has-text-centered">
+                <input id="throttle" class="slider is-fullwidth is-large is-link" type="range" min="0" max="100" step="1" orient="vertical" v-model="percentage" @change="setThrottle()">
+                <label for="throttle">{{ percentage }}%</label>
             </div>
         </div>
     </div>
@@ -13,11 +13,14 @@
 <script>
     import bus from '../bus';
 
+    const MIN_THROTTLE = 250;
+    const MAX_THROTTLE = 1000;
+
     export default {
         data() {
             return {
-                throttle: this.tank.throttle,
-            };
+                percentage: Math.round(((this.tank.throttle - MIN_THROTTLE) * 100) / (MAX_THROTTLE - MIN_THROTTLE)),
+            }
         },
         props: {
             tank: {
@@ -27,11 +30,13 @@
         },
         methods: {
             setThrottle() {
+                const throttle = (this.percentage * (MAX_THROTTLE - MIN_THROTTLE) / 100) + MIN_THROTTLE;
+
                 this.$http.put('/throttle', {
-                    throttle: this.throttle,
+                    throttle,
                 }).then((response) => {
                     bus.$emit('throttle-set', {
-                        throttle: this.throttle,
+                        throttle,
                     });
                 }).catch((error) => {
                     bus.$emit('communication-error', {

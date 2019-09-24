@@ -1,7 +1,7 @@
 export default [
     {
-        name: 'basic',
+        name: 'manual',
         path: '/',
-        component: require('./pages/BasicControls.vue').default,
+        component: require('./pages/ManualControl.vue').default,
     },
 ];
