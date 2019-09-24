@@ -7,6 +7,8 @@
 #include <Wire.h>
 #include <FS.h>
 
+#define SERIAL_BAUD 9600
+
 #define AP_CHANNEL 1
 #define MAX_CONNECTIONS 2
 #define HIDDEN_SSID false
@@ -33,16 +35,22 @@
 #define I2C_CLOCK 400000
 
 #define MPU_ADDRESS 0x68
-#define INTERRUPT_PIN 16
-#define DMP_SAMPLE_RATE 50
+#define INTERRUPT_PIN 13
 #define LSB_SENSITIVITY 8192.0
+#define GYRO_X_OFFSET -31
+#define GYRO_Y_OFFSET -81
+#define GYRO_Z_OFFSET 18
+#define MAX_YAW_DELTA 5
+#define YAW_BUMP_DURATION 25
 
 #define BATTERY_PIN A0
 #define BATTERY_SAMPLE_RATE 5000
+#define MIN_VOLTAGE 6.0
+#define MAX_VOLTAGE 8.4
 
 #define TETHER_SAMPLE_RATE 250
 
-#define SERIAL_BAUD 9600
+#define GAMMA 57.2957795131
 
 char* _ssid = "Kirby The Tank Robot";
 char* _password = "KeepSummerSafe";
@@ -61,14 +69,16 @@ bool _stopped = true;
 
 MPU6050 mpu(MPU_ADDRESS);
 
-Quaternion q;
-VectorInt16 aa, aaReal, aaWorld;
-VectorFloat gravity;
+Quaternion _q;
+VectorInt16 _aa, _aaReal, _aaWorld;
+VectorFloat _gravity;
+float _yaw, _pitch, _roll;
+float _yaw_lock;
 uint16_t _dmp_packet_size;
 uint8_t _dmp_fifo_buffer[64];
 bool _dmp_ready = false;
 
-float _battery_level = 1.0;
+float _battery_voltage = MAX_VOLTAGE;
 
 Ticker battery_timer;
 Ticker tether_timer;
@@ -142,6 +152,7 @@ void setup() {
   pinMode(INTERRUPT_PIN, INPUT);
 
   mpu.setFullScaleAccelRange(MPU6050_ACCEL_FS_2);
+  mpu.setFullScaleGyroRange(MPU6050_GYRO_FS_250);
   mpu.initialize();
 
   if (mpu.testConnection()) {
@@ -149,9 +160,12 @@ void setup() {
   } else {
     Serial.println("MPU failure");
   }
+
+  mpu.setXGyroOffset(GYRO_X_OFFSET);
+  mpu.setYGyroOffset(GYRO_Y_OFFSET);
+  mpu.setZGyroOffset(GYRO_Z_OFFSET);
   
   mpu.dmpInitialize();
-  mpu.setRate(DMP_SAMPLE_RATE);
   mpu.setDMPEnabled(true);
   mpu.setSleepEnabled(false);
 
@@ -185,6 +199,42 @@ void loop() {
     _dmp_ready = false;
   }
 
+  if (!_stopped && (_direction == "forward" || _direction == "reverse")) {
+    float delta = _yaw_lock - _yaw;
+
+    Serial.println(delta);
+
+    if (abs(delta) > MAX_YAW_DELTA) {
+      if (_direction == "forward") {
+        if (_yaw > _yaw_lock) {
+          left();
+        } else {
+          right();
+        }
+
+        delay(YAW_BUMP_DURATION);
+
+        digitalWrite(MOTOR_A_DIRECTION_PIN, FORWARD);
+        digitalWrite(MOTOR_B_DIRECTION_PIN, FORWARD);
+
+        _direction = "forward";
+      } else if (_direction == "reverse") {
+        if (_yaw > _yaw_lock) {
+          right();
+        } else {
+          left();
+        }
+
+        delay(YAW_BUMP_DURATION);
+
+        digitalWrite(MOTOR_A_DIRECTION_PIN, REVERSE);
+        digitalWrite(MOTOR_B_DIRECTION_PIN, REVERSE);
+
+        _direction = "reverse";
+      }
+    }
+  }
+
   server.handleClient();
   
   socket.loop();
@@ -200,7 +250,7 @@ void handleStatus() {
   doc["throttle"] = _throttle;
   doc["direction"] = _direction;
   doc["stopped"] = _stopped;
-  doc["battery_level"] = _battery_level;
+  doc["battery_voltage"] = _battery_voltage;
   
   serializeJson(doc, buffer);
 
@@ -286,13 +336,14 @@ void handleWebSocket(uint8_t num, WStype_t type, uint8_t * payload, size_t lengt
 }
 
 /**
- * Move in the forward direction.
+ * Move forward.
  */
 void forward() {
   digitalWrite(MOTOR_A_DIRECTION_PIN, FORWARD);
   digitalWrite(MOTOR_B_DIRECTION_PIN, FORWARD);
 
   _direction = "forward";
+  _yaw_lock = _yaw;
 
   go();
 }
@@ -329,6 +380,7 @@ void reverse() {
   digitalWrite(MOTOR_B_DIRECTION_PIN, REVERSE);
 
   _direction = "reverse";
+  _yaw_lock = _yaw;
 
   go();
 }
@@ -378,6 +430,7 @@ void dmpDataReady() {
  */
 void updatePosition() {
   uint16_t fifo_count = mpu.getFIFOCount();
+  float orientation[3];
 
   while (fifo_count >= _dmp_packet_size) {
     mpu.getFIFOBytes(_dmp_fifo_buffer, _dmp_packet_size);
@@ -385,26 +438,35 @@ void updatePosition() {
     fifo_count -= _dmp_packet_size;
   }
 
-  mpu.dmpGetQuaternion(&q, _dmp_fifo_buffer);
-  mpu.dmpGetAccel(&aa, _dmp_fifo_buffer);
-  mpu.dmpGetGravity(&gravity, &q);
-  mpu.dmpGetLinearAccel(&aaReal, &aa, &gravity);
-  mpu.dmpGetLinearAccelInWorld(&aaWorld, &aaReal, &q);
+  mpu.dmpGetQuaternion(&_q, _dmp_fifo_buffer);
+  mpu.dmpGetGravity(&_gravity, &_q);
+  mpu.dmpGetYawPitchRoll(orientation, &_q, &_gravity);
+  mpu.dmpGetAccel(&_aa, _dmp_fifo_buffer);
+  mpu.dmpGetLinearAccel(&_aaReal, &_aa, &_gravity);
+  mpu.dmpGetLinearAccelInWorld(&_aaWorld, &_aaReal, &_q);
+
+  _yaw = orientation[0] * GAMMA;
+  _pitch = orientation[1] * GAMMA;
+  _roll = orientation[2] * GAMMA;
 }
 
 /**
- * Update the battery level and broadcast the event to any connected websockets clients.
+ * Update the battery voltage and broadcast the event to any connected websockets clients.
  */
 void checkBattery() {
   StaticJsonDocument<200> doc;
   char buffer[200];
 
-  uint8_t raw = analogRead(BATTERY_PIN);
+  float raw = analogRead(BATTERY_PIN);
 
-  _battery_level = raw / 1024.0;
+  _battery_voltage = raw / 1024.0 * MAX_VOLTAGE;
+
+  if (_battery_voltage <= MIN_VOLTAGE) {
+    stop();
+  }
 
   doc["name"] = "battery-update";
-  doc["battery_level"] = _battery_level;
+  doc["battery_voltage"] = _battery_voltage;
 
   serializeJson(doc, buffer);
 

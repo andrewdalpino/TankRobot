@@ -3,8 +3,8 @@
         <h3 class="label">Throttle</h3>
         <div class="field">
             <div class="control has-text-centered">
-                <input id="throttle" class="slider is-fullwidth is-large is-link" type="range" min="0" max="100" step="1" orient="vertical" v-model="percentage" @change="setThrottle()">
                 <label for="throttle">{{ percentage }}%</label>
+                <input id="throttle" class="slider is-fullwidth is-large is-link" type="range" min="0" max="100" step="1" orient="vertical" v-model="percentage" @change="setThrottle()">
             </div>
         </div>
     </div>

@@ -14,7 +14,7 @@
                             </span>
                         </p>
                         <p class="is-size-5">
-                            There was an error communicating with Kirby. Check to make sure you are connected.
+                            There was an error communicating with the robot. Check to make sure you are connected.
                         </p>
                         <p class="error-message is-size-7">
                             {{ message }}

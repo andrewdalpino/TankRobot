@@ -19,7 +19,7 @@
                     throttle: 625,
                     direction: 'forward',
                     stopped: true,
-                    battery_level: 1.0,
+                    battery_voltage: 8.4,
                 },
             };
         },
@@ -37,7 +37,7 @@
 
                 switch (data.name) {
                     case 'battery-update':
-                        this.tank.battery_level = data.battery_level;
+                        this.tank.battery_voltage = data.battery_voltage;
 
                         break;
                 }

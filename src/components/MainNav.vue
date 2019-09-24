@@ -13,7 +13,7 @@
             <div class="navbar-end">
                 <router-link :to="{ name: 'manual'}" class="navbar-item button is-white is-fullwidth" @click.native="open = false">
                     <span class="icon"><i class="fas fa-arrows-alt"></i></span>
-                    <span>Basic Controls</span>
+                    <span>Manual Control</span>
                 </router-link>
             </div>
         </div>
