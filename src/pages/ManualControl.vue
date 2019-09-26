@@ -1,6 +1,6 @@
 <template>
     <section class="section">
-        <battery-info-bar :tank="tank"></battery-info-bar>
+        <information-panel :tank="tank"></information-panel>
         <div class="columns is-mobile">
             <div class="column is-one-quarter">
                 <throttle :tank="tank"></throttle>
@@ -9,6 +9,7 @@
                 <direction-pad :tank="tank"></direction-pad>
             </div>
         </div>
+        <stability-control :tank="tank"></stability-control>
     </section>
 </template>
 

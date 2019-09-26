@@ -15,6 +15,7 @@
         "babel-loader": "^8.0.6",
         "bulma": "^0.7.5",
         "bulma-slider": "^2.0.0",
+        "bulma-switch": "^2.0.0",
         "cross-env": "^5.1",
         "css-loader": "^2.1.1",
         "file-loader": "^4.2.0",
@@ -25,13 +26,11 @@
         "vue": "^2.6.8",
         "vue-axios": "^2.1.4",
         "vue-loader": "^15.7.1",
+        "vue-native-websocket": "^2.0.13",
         "vue-router": "^3.1.2",
         "vue-style-loader": "^4.1.2",
         "vue-template-compiler": "^2.6.10",
         "webpack": "^4.39.2",
         "webpack-cli": "^3.3.6"
-    },
-    "dependencies": {
-        "vue-native-websocket": "^2.0.13"
     }
 }

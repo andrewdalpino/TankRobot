@@ -26,9 +26,9 @@
 #define MOTOR_B_THROTTLE_PIN 4
 #define FORWARD 1
 #define REVERSE 0
-#define MIN_THROTTLE 250
+#define MIN_THROTTLE 500
 #define MAX_THROTTLE 1000
-#define DEFAULT_THROTTLE 625
+#define DEFAULT_THROTTLE 750
 
 #define I2C_SDA_PIN 12
 #define I2C_SCL_PIN 14
@@ -36,12 +36,10 @@
 
 #define MPU_ADDRESS 0x68
 #define INTERRUPT_PIN 13
+#define YAW_LOCK_TOLERANCE 2.5 * M_PI / 180.0
+#define BACKOFF_THROTTLE 0
+#define BACKOFF_DURATION 10
 #define LSB_SENSITIVITY 8192.0
-#define GYRO_X_OFFSET -31
-#define GYRO_Y_OFFSET -81
-#define GYRO_Z_OFFSET 18
-#define MAX_YAW_DELTA 5
-#define YAW_BUMP_DURATION 25
 
 #define BATTERY_PIN A0
 #define BATTERY_SAMPLE_RATE 5000
@@ -50,10 +48,8 @@
 
 #define TETHER_SAMPLE_RATE 250
 
-#define GAMMA 57.2957795131
-
-char* _ssid = "Kirby The Tank Robot";
-char* _password = "KeepSummerSafe";
+const String _ssid = "Kirby The Tank Robot";
+const String _password = "KeepSummerSafe";
 
 const IPAddress ip(192,168,4,1);
 const IPAddress gateway(192,168,4,1);
@@ -64,15 +60,16 @@ ESP8266WebServer server(HTTP_PORT);
 WebSocketsServer socket = WebSocketsServer(WEBSOCKETS_PORT);
 
 unsigned int _throttle = DEFAULT_THROTTLE;
-char* _direction = "forward";
+String _direction = "forward";
 bool _stopped = true;
 
 MPU6050 mpu(MPU_ADDRESS);
 
 Quaternion _q;
-VectorInt16 _aa, _aaReal, _aaWorld;
 VectorFloat _gravity;
-float _yaw, _pitch, _roll;
+VectorInt16 _aa, _aa_real, _aa_world;
+float _orientation[3];
+bool _stabilize = true;
 float _yaw_lock;
 uint16_t _dmp_packet_size;
 uint8_t _dmp_fifo_buffer[64];
@@ -81,6 +78,7 @@ bool _dmp_ready = false;
 float _battery_voltage = MAX_VOLTAGE;
 
 Ticker battery_timer;
+
 Ticker tether_timer;
 
 void ICACHE_RAM_ATTR dmpDataReady();
@@ -109,8 +107,8 @@ void setup() {
   }
 
   server.serveStatic("/", SPIFFS, "/index.html");
-  server.serveStatic("/app.js", SPIFFS, "/app.js"); 
-  server.serveStatic("/app.css", SPIFFS, "/app.css"); 
+  server.serveStatic("/app.js", SPIFFS, "/app.js");
+  server.serveStatic("/app.css", SPIFFS, "/app.css");
   server.serveStatic("/fa-solid-900.woff", SPIFFS, "/fa-solid-900.woff");
   server.serveStatic("/fa-solid-900.woff2", SPIFFS, "/fa-solid-900.woff2");
   server.serveStatic("/app-icon-small.png", SPIFFS, "/app-icon-small.png");
@@ -122,19 +120,27 @@ void setup() {
   server.on("/api/movement/left", HTTP_PUT, handleLeft);
   server.on("/api/movement/right", HTTP_PUT, handleRight);
   server.on("/api/movement/stop", HTTP_PUT, handleStop);
+  server.on("/api/movement/stabilizer", HTTP_PUT, handleEnableStabilizer);
+  server.on("/api/movement/stabilizer", HTTP_DELETE, handleDisableStabilizer);
   server.on("/api/throttle", HTTP_PUT, handleSetThrottle);
   server.onNotFound(handleNotFound);
 
   server.begin();
 
-  Serial.print("HTTP Server listening on port: ");
+  Serial.print("HTTP Server listening on port ");
   Serial.println(HTTP_PORT);
   
   socket.begin();
   socket.onEvent(handleWebSocket);
 
-  Serial.print("Websockets Server listening on port: ");
+  Serial.print("Websockets Server listening on port ");
   Serial.println(WEBSOCKETS_PORT);
+
+  pinMode(BATTERY_PIN, INPUT);
+  
+  battery_timer.attach_ms(BATTERY_SAMPLE_RATE, checkBattery);
+
+  Serial.println("Battery voltmeter initialized");
 
   pinMode(MOTOR_A_DIRECTION_PIN, OUTPUT);
   pinMode(MOTOR_A_THROTTLE_PIN, OUTPUT);
@@ -151,8 +157,8 @@ void setup() {
 
   pinMode(INTERRUPT_PIN, INPUT);
 
-  mpu.setFullScaleAccelRange(MPU6050_ACCEL_FS_2);
   mpu.setFullScaleGyroRange(MPU6050_GYRO_FS_250);
+  mpu.setFullScaleAccelRange(MPU6050_ACCEL_FS_2);
   mpu.initialize();
 
   if (mpu.testConnection()) {
@@ -161,9 +167,11 @@ void setup() {
     Serial.println("MPU failure");
   }
 
-  mpu.setXGyroOffset(GYRO_X_OFFSET);
-  mpu.setYGyroOffset(GYRO_Y_OFFSET);
-  mpu.setZGyroOffset(GYRO_Z_OFFSET);
+  Serial.println("Calibrating gyroscope and accelerometer");
+
+  mpu.CalibrateAccel(6);
+  mpu.CalibrateGyro(6);
+  mpu.PrintActiveOffsets();
   
   mpu.dmpInitialize();
   mpu.setDMPEnabled(true);
@@ -174,11 +182,10 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(INTERRUPT_PIN), dmpDataReady, RISING);
 
   Serial.println("DMP initialized");
-
-  pinMode(BATTERY_PIN, INPUT);
-
-  battery_timer.attach_ms(BATTERY_SAMPLE_RATE, checkBattery);
+  
   tether_timer.attach_ms(TETHER_SAMPLE_RATE, checkTether);
+
+  Serial.println("WiFi tether activated");
 
   Serial.println("Ready");
 }
@@ -193,44 +200,20 @@ void loop() {
     if (mpu_int_status & 0x10) {
       mpu.resetFIFO();
     } else if (mpu_int_status & 0x02) {
-      updatePosition();
+      readDmpBuffer();
+      
+      updateOrientation();
     }
 
     _dmp_ready = false;
   }
 
-  if (!_stopped && (_direction == "forward" || _direction == "reverse")) {
-    float delta = _yaw_lock - _yaw;
-
-    Serial.println(delta);
-
-    if (abs(delta) > MAX_YAW_DELTA) {
-      if (_direction == "forward") {
-        if (_yaw > _yaw_lock) {
-          left();
-        } else {
-          right();
-        }
-
-        delay(YAW_BUMP_DURATION);
-
-        digitalWrite(MOTOR_A_DIRECTION_PIN, FORWARD);
-        digitalWrite(MOTOR_B_DIRECTION_PIN, FORWARD);
-
-        _direction = "forward";
-      } else if (_direction == "reverse") {
-        if (_yaw > _yaw_lock) {
-          right();
-        } else {
-          left();
-        }
-
-        delay(YAW_BUMP_DURATION);
-
-        digitalWrite(MOTOR_A_DIRECTION_PIN, REVERSE);
-        digitalWrite(MOTOR_B_DIRECTION_PIN, REVERSE);
-
-        _direction = "reverse";
+  if (!_stopped && _stabilize) {
+    if (_direction == "forward" || _direction == "reverse") {
+      float delta = _yaw_lock - _orientation[0];
+  
+      if (fabs(delta) > YAW_LOCK_TOLERANCE) {
+        stabilize(delta);
       }
     }
   }
@@ -244,11 +227,12 @@ void loop() {
  * Handle the status request.
  */
 void handleStatus() {
-  StaticJsonDocument<200> doc;
-  char buffer[200];
+  StaticJsonDocument<300> doc;
+  char buffer[300];
 
   doc["throttle"] = _throttle;
   doc["direction"] = _direction;
+  doc["stabilize"] = _stabilize;
   doc["stopped"] = _stopped;
   doc["battery_voltage"] = _battery_voltage;
   
@@ -306,7 +290,7 @@ void handleStop() {
  * Handle the set speed request.
  */
 void handleSetThrottle() {
-  StaticJsonDocument<200> doc;
+  StaticJsonDocument<100> doc;
 
   deserializeJson(doc, server.arg("plain"));
 
@@ -317,6 +301,24 @@ void handleSetThrottle() {
   }
 
   setThrottle(doc["throttle"]);
+
+  server.send(HTTP_OK);
+}
+
+/**
+ * Handle an enable movement stabilizer request.
+ */
+void handleEnableStabilizer() {
+  setStabilizer(true);
+
+  server.send(HTTP_OK);
+}
+
+/**
+ * Handle a disable movement stabilizer request.
+ */
+void handleDisableStabilizer() {
+  setStabilizer(false);
 
   server.send(HTTP_OK);
 }
@@ -343,7 +345,7 @@ void forward() {
   digitalWrite(MOTOR_B_DIRECTION_PIN, FORWARD);
 
   _direction = "forward";
-  _yaw_lock = _yaw;
+  _yaw_lock = _orientation[0];
 
   go();
 }
@@ -380,7 +382,7 @@ void reverse() {
   digitalWrite(MOTOR_B_DIRECTION_PIN, REVERSE);
 
   _direction = "reverse";
-  _yaw_lock = _yaw;
+  _yaw_lock = _orientation[0];
 
   go();
 }
@@ -396,13 +398,14 @@ void go() {
 }
 
 /**
- * Disengage the motors and come to a complete stop.
+ * Disengage the motors and come to a stop.
  */
 void stop() {
   analogWrite(MOTOR_A_THROTTLE_PIN, 0);
   analogWrite(MOTOR_B_THROTTLE_PIN, 0);
 
   _stopped = true;
+  _direction = "";
 }
 
 /**
@@ -419,6 +422,15 @@ void setThrottle(int throttle) {
 }
 
 /**
+ * Turn the linear movement stabilizer on and off.
+ * 
+ * @param bool stabilize
+ */
+void setStabilizer(bool stabilize) {
+  _stabilize = stabilize;
+}
+
+/**
  * MPU interrupt callback to signal DMP data is ready.
  */
 void dmpDataReady() {
@@ -426,36 +438,80 @@ void dmpDataReady() {
 }
 
 /**
- * Read the MPU data buffer and compute current orientation and acceleration.
+ * Read the MPU data buffer.
  */
-void updatePosition() {
+void readDmpBuffer() {
   uint16_t fifo_count = mpu.getFIFOCount();
-  float orientation[3];
-
+  
   while (fifo_count >= _dmp_packet_size) {
     mpu.getFIFOBytes(_dmp_fifo_buffer, _dmp_packet_size);
 
     fifo_count -= _dmp_packet_size;
   }
+}
 
+/**
+ * Compute current yaw, pitch, and roll using the onboard DMP.
+ */
+void updateOrientation() {
   mpu.dmpGetQuaternion(&_q, _dmp_fifo_buffer);
   mpu.dmpGetGravity(&_gravity, &_q);
-  mpu.dmpGetYawPitchRoll(orientation, &_q, &_gravity);
-  mpu.dmpGetAccel(&_aa, _dmp_fifo_buffer);
-  mpu.dmpGetLinearAccel(&_aaReal, &_aa, &_gravity);
-  mpu.dmpGetLinearAccelInWorld(&_aaWorld, &_aaReal, &_q);
+  mpu.dmpGetYawPitchRoll(_orientation, &_q, &_gravity);
+}
 
-  _yaw = orientation[0] * GAMMA;
-  _pitch = orientation[1] * GAMMA;
-  _roll = orientation[2] * GAMMA;
+/**
+ * Compute the real world acceleration using the DMP.
+ */
+void updateAcceleration() {
+  mpu.dmpGetAccel(&_aa, _dmp_fifo_buffer);
+  mpu.dmpGetLinearAccel(&_aa_real, &_aa, &_gravity);
+  mpu.dmpGetLinearAccelInWorld(&_aa_world, &_aa_real, &_q);
+}
+
+/**
+ * Stabilize the robot using a weighted backoff strategy. The backoff strategy momentarily
+ * lets off the throttle on the side that is ahead.
+ * 
+ * @param float delta
+ */
+void stabilize(float delta) {
+  if (_direction == "forward") {
+    if (delta > 0.0) {
+      analogWrite(MOTOR_A_THROTTLE_PIN, BACKOFF_THROTTLE);
+
+      delay(BACKOFF_DURATION);
+
+      analogWrite(MOTOR_A_THROTTLE_PIN, _throttle);
+    } else {
+      analogWrite(MOTOR_B_THROTTLE_PIN, BACKOFF_THROTTLE);
+
+      delay(BACKOFF_DURATION);
+
+      analogWrite(MOTOR_B_THROTTLE_PIN, _throttle);
+    }
+  } else if (_direction == "reverse") {
+    if (delta < 0.0) {
+      analogWrite(MOTOR_A_THROTTLE_PIN, BACKOFF_THROTTLE);
+
+      delay(BACKOFF_DURATION);
+
+      analogWrite(MOTOR_A_THROTTLE_PIN, _throttle);
+    } else {
+      analogWrite(MOTOR_B_THROTTLE_PIN, BACKOFF_THROTTLE);
+
+      delay(BACKOFF_DURATION);
+
+      analogWrite(MOTOR_B_THROTTLE_PIN, _throttle);
+    }
+  }
 }
 
 /**
  * Update the battery voltage and broadcast the event to any connected websockets clients.
  */
 void checkBattery() {
-  StaticJsonDocument<200> doc;
-  char buffer[200];
+  StaticJsonDocument<100> doc;
+  char buffer[100];
 
   float raw = analogRead(BATTERY_PIN);
 

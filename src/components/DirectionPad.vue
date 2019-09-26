@@ -53,57 +53,67 @@
         },
         methods: {
             forward() {
-                this.$http.put('/movement/forward').then((response) => {
-                    bus.$emit('moving', {
-                        direction: 'forward',
+                if (this.tank.direction !== 'forward') {
+                    this.$http.put('/movement/forward').then((response) => {
+                        bus.$emit('moving', {
+                            direction: 'forward',
+                        });
+                    }).catch((error) => {
+                        bus.$emit('communication-error', {
+                            error,
+                        });
                     });
-                }).catch((error) => {
-                    bus.$emit('communication-error', {
-                        error,
-                    });
-                });
+                }
             },
             left() {
-                this.$http.put('/movement/left').then((response) => {
-                    bus.$emit('moving', {
-                        direction: 'left',
+                if (this.tank.direction !== 'left') {
+                    this.$http.put('/movement/left').then((response) => {
+                        bus.$emit('moving', {
+                            direction: 'left',
+                        });
+                    }).catch((error) => {
+                        bus.$emit('communication-error', {
+                            error,
+                        });
                     });
-                }).catch((error) => {
-                    bus.$emit('communication-error', {
-                        error,
-                    });
-                });
+                }
             },
             right() {
-                this.$http.put('/movement/right').then((response) => {
-                    bus.$emit('moving', {
-                        direction: 'right',
+                if (this.tank.direction !== 'right') {
+                    this.$http.put('/movement/right').then((response) => {
+                        bus.$emit('moving', {
+                            direction: 'right',
+                        });
+                    }).catch((error) => {
+                        bus.$emit('communication-error', {
+                            error,
+                        });
                     });
-                }).catch((error) => {
-                    bus.$emit('communication-error', {
-                        error,
-                    });
-                });;
+                }
             },
             reverse() {
-                this.$http.put('/movement/reverse').then((response) => {
-                    bus.$emit('moving', {
-                        direction: 'reverse',
+                if (this.tank.direction !== 'reverse') {
+                    this.$http.put('/movement/reverse').then((response) => {
+                        bus.$emit('moving', {
+                            direction: 'reverse',
+                        });
+                    }).catch((error) => {
+                        bus.$emit('communication-error', {
+                            error,
+                        });
                     });
-                }).catch((error) => {
-                    bus.$emit('communication-error', {
-                        error,
-                    });
-                });
+                }
             },
             stop() {
-                this.$http.put('/movement/stop').then((response) => {
-                    bus.$emit('stopping');
-                }).catch((error) => {
-                    bus.$emit('communication-error', {
-                        error,
+                if (!this.tank.stopped) {
+                    this.$http.put('/movement/stop').then((response) => {
+                        bus.$emit('stopping');
+                    }).catch((error) => {
+                        bus.$emit('communication-error', {
+                            error,
+                        });
                     });
-                });
+                }
             },
         },
     }

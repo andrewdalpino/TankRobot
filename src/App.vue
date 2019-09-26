@@ -16,8 +16,9 @@
         data() {
             return {
                 tank: {
-                    throttle: 625,
-                    direction: 'forward',
+                    throttle: 750,
+                    direction: '',
+                    stabilize: true,
                     stopped: true,
                     battery_voltage: 8.4,
                 },
@@ -32,8 +33,8 @@
                 });
             });
 
-            this.$options.sockets.onmessage = (event) => {
-                let data = JSON.parse(event.data);
+            this.$options.sockets.onmessage = (message) => {
+                let data = JSON.parse(message.data);
 
                 switch (data.name) {
                     case 'battery-update':
@@ -43,17 +44,26 @@
                 }
             }
 
-            bus.$on('throttle-set', (payload) => {
-                this.tank.throttle = payload.throttle;
-            });
-
             bus.$on('moving', (payload) => {
                 this.tank.direction = payload.direction;
                 this.tank.stopped = false;
             });
 
+            bus.$on('throttle-set', (payload) => {
+                this.tank.throttle = payload.throttle;
+            });
+
+            bus.$on('stabilizer-enabled', (payload) => {
+                this.tank.stabilize = true;
+            });
+
+            bus.$on('stabilizer-disabled', (payload) => {
+                this.tank.stabilize = false;
+            });
+
             bus.$on('stopping', (payload) => {
                 this.tank.stopped = true;
+                this.tank.direction = '';
             });
         },
     }
