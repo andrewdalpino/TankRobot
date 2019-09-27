@@ -21,6 +21,7 @@
                     stabilize: true,
                     stopped: true,
                     battery_voltage: 8.4,
+                    temperature: 0.0,
                 },
             };
         },
@@ -39,6 +40,11 @@
                 switch (data.name) {
                     case 'battery-update':
                         this.tank.battery_voltage = data.battery_voltage;
+
+                        break;
+
+                    case 'temperature-update':
+                        this.tank.temperature = data.temperature;
 
                         break;
                 }

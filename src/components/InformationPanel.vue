@@ -10,9 +10,9 @@
                     </span>
                 </div>
                 <div>
-                    <p class="heading is-size-7">{{ tank.stabilize ? 'On' : 'Off' }}</p>
+                    <p class="heading is-size-7">{{ tank.temperature.toFixed(1) }}°</p>
                     <span class="icon is-large">
-                        <i class="fas fa-2x fa-road"></i>
+                        <i class="fas fa-2x" :class="temperature_indicator"></i>
                     </span>
                 </div>
                 <div>
@@ -49,6 +49,15 @@
         computed: {
             throttle_percentage() {
                 return Math.round(((this.tank.throttle - MIN_THROTTLE) * 100) / (MAX_THROTTLE - MIN_THROTTLE));
+            },
+            temperature_indicator() {
+                if (this.tank.temperature < 5.0) {
+                    return 'fa-temperature-low';
+                } else if (this.tank.temperature > 45.0) {
+                    return 'fa-temperature-high';
+                } else {
+                    return 'fa-thermometer-half';
+                }
             },
             battery_percentage() {
                 return Math.max(0.0, Math.round(((this.tank.battery_voltage - MIN_VOLTAGE) / (MAX_VOLTAGE - MIN_VOLTAGE) * 100.0)));

@@ -1,6 +1,6 @@
 <template>
     <div class="container">
-        <h3 class="label">Stability Control</h3>
+        <h3 class="label">Stability Assist</h3>
         <div class="field">
             <div class="control">
                 <input id="stabilize" type="checkbox" name="stabilize" class="switch is-primary" v-model="stabilize" @click="toggle()">

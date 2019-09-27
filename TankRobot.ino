@@ -35,14 +35,17 @@
 #define I2C_CLOCK 400000
 
 #define MPU_ADDRESS 0x68
-#define INTERRUPT_PIN 13
+#define INTERRUPT_PIN 10
+#define LSB_SENSITIVITY 8192.0
+#define TEMPERATURE_SENSITIVITY 340.0
+#define TEMPERATURE_CONSTANT 36.53
+#define TEMPERATURE_SAMPLE_RATE 5000
 #define YAW_LOCK_TOLERANCE 2.5 * M_PI / 180.0
 #define BACKOFF_THROTTLE 0
 #define BACKOFF_DURATION 10
-#define LSB_SENSITIVITY 8192.0
 
 #define BATTERY_PIN A0
-#define BATTERY_SAMPLE_RATE 5000
+#define BATTERY_SAMPLE_RATE 2500
 #define MIN_VOLTAGE 6.0
 #define MAX_VOLTAGE 8.4
 
@@ -69,13 +72,16 @@ Quaternion _q;
 VectorFloat _gravity;
 VectorInt16 _aa, _aa_real, _aa_world;
 float _orientation[3];
-bool _stabilize = true;
+float _temperature;
 float _yaw_lock;
 uint16_t _dmp_packet_size;
 uint8_t _dmp_fifo_buffer[64];
 bool _dmp_ready = false;
+bool _stabilize = true;
 
-float _battery_voltage = MAX_VOLTAGE;
+Ticker temperature_timer;
+
+float _battery_voltage;
 
 Ticker battery_timer;
 
@@ -181,13 +187,13 @@ void setup() {
 
   attachInterrupt(digitalPinToInterrupt(INTERRUPT_PIN), dmpDataReady, RISING);
 
+  temperature_timer.attach_ms(TEMPERATURE_SAMPLE_RATE, updateTemperature);
+
   Serial.println("DMP initialized");
   
   tether_timer.attach_ms(TETHER_SAMPLE_RATE, checkTether);
 
   Serial.println("WiFi tether activated");
-
-  Serial.println("Ready");
 }
 
 /**
@@ -197,12 +203,12 @@ void loop() {
   if (_dmp_ready) {
     uint8_t mpu_int_status = mpu.getIntStatus();
 
-    if (mpu_int_status & 0x10) {
-      mpu.resetFIFO();
-    } else if (mpu_int_status & 0x02) {
+    if (mpu_int_status & 0x02) {
       readDmpBuffer();
       
       updateOrientation();
+    } else if (mpu_int_status & 0x10) {
+      mpu.resetFIFO();
     }
 
     _dmp_ready = false;
@@ -224,7 +230,7 @@ void loop() {
 }
 
 /**
- * Handle the status request.
+ * Handle the robot status request.
  */
 void handleStatus() {
   StaticJsonDocument<300> doc;
@@ -235,6 +241,7 @@ void handleStatus() {
   doc["stabilize"] = _stabilize;
   doc["stopped"] = _stopped;
   doc["battery_voltage"] = _battery_voltage;
+  doc["temperature"] = _temperature;
   
   serializeJson(doc, buffer);
 
@@ -469,8 +476,7 @@ void updateAcceleration() {
 }
 
 /**
- * Stabilize the robot using a weighted backoff strategy. The backoff strategy momentarily
- * lets off the throttle on the side that is ahead.
+ * Momentarily let off the throttle on the side that is ahead.
  * 
  * @param float delta
  */
@@ -507,12 +513,30 @@ void stabilize(float delta) {
 }
 
 /**
+ * Update the temperature reading from the MPU and broadcast to connected sockets.
+ */
+void updateTemperature() {  
+  int raw = mpu.getTemperature();
+
+  _temperature = raw / TEMPERATURE_SENSITIVITY + TEMPERATURE_CONSTANT;
+
+  if (socket.connectedClients() > 0) {
+    StaticJsonDocument<100> doc;
+    char buffer[100];
+  
+    doc["name"] = "temperature-update";
+    doc["temperature"] = _temperature;
+
+    serializeJson(doc, buffer);
+
+    socket.broadcastTXT(buffer);
+  }
+}
+
+/**
  * Update the battery voltage and broadcast the event to any connected websockets clients.
  */
 void checkBattery() {
-  StaticJsonDocument<100> doc;
-  char buffer[100];
-
   float raw = analogRead(BATTERY_PIN);
 
   _battery_voltage = raw / 1024.0 * MAX_VOLTAGE;
@@ -521,12 +545,17 @@ void checkBattery() {
     stop();
   }
 
-  doc["name"] = "battery-update";
-  doc["battery_voltage"] = _battery_voltage;
+  if (socket.connectedClients() > 0) {
+    StaticJsonDocument<100> doc;
+    char buffer[100];
+  
+    doc["name"] = "battery-update";
+    doc["battery_voltage"] = _battery_voltage;
 
-  serializeJson(doc, buffer);
+    serializeJson(doc, buffer);
 
-  socket.broadcastTXT(buffer);
+    socket.broadcastTXT(buffer);
+  }
 }
 
 /**

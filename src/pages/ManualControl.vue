@@ -9,7 +9,7 @@
                 <direction-pad :tank="tank"></direction-pad>
             </div>
         </div>
-        <stability-control :tank="tank"></stability-control>
+        <stability-assist :tank="tank"></stability-assist>
     </section>
 </template>
 
