@@ -4,6 +4,7 @@
         <main>
             <router-view :tank="tank"></router-view>
         </main>
+        <rollover-detected></rollover-detected>
         <communication-error></communication-error>
         <audio id="plucky" src="plucky.ogg"></audio>
     </div>
@@ -20,7 +21,7 @@
                     direction: '',
                     stabilize: true,
                     stopped: true,
-                    battery_voltage: 8.4,
+                    battery_voltage: 0.0,
                     temperature: 0.0,
                 },
             };
@@ -46,6 +47,11 @@
                     case 'temperature-update':
                         this.tank.temperature = data.temperature;
 
+                        break;
+
+                    case 'rollover-detected':
+                        bus.$emit('rollover-detected');
+                        
                         break;
                 }
             }

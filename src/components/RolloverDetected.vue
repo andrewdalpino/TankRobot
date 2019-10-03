@@ -6,16 +6,10 @@
                 <div class="card-content">
                     <div class="content">
                         <span class="icon is-large">
-                            <span class="fa-stack fa-lg">
-                                <i class="fas fa-wifi fa-stack-1x"></i>
-                                <i class="fas fa-ban fa-stack-2x has-text-danger"></i>
-                            </span>
+                            <i class="fas fa-2x fa-car-crash"></i>
                         </span>
                         <p class="is-size-5">
-                            There was an error communicating with the robot. Check to make sure you are connected.
-                        </p>
-                        <p class="error-message is-size-7">
-                            {{ message }}
+                            A rollover was detected. Check the orientation of the vehicle.
                         </p>
                     </div>
                 </div>
@@ -24,12 +18,6 @@
                         <button class="button is-white" @click="open = false">
                             <span class="icon"><i class="fas fa-times"></i></span>
                             <span>Dismiss</span>
-                        </button>
-                    </div>
-                    <div class="card-footer-item">
-                        <button class="button is-white" @click="$router.go()">
-                            <span class="icon"><i class="fas fa-redo"></i></span>
-                            <span>Retry</span>
                         </button>
                     </div>
                 </footer>
@@ -47,14 +35,12 @@
         data() {
             return {
                 open: false,
-                message: '',
             };
         },
         mounted() {
-            bus.$on('communication-error', (payload) => {
+            bus.$on('rollover-detected', (payload) => {
                 if (!this.open) {
                     this.open = true;
-                    this.message = payload.error.message;
 
                     document.getElementById('plucky').play();
 

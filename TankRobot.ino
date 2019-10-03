@@ -9,16 +9,17 @@
 
 #define SERIAL_BAUD 9600
 
-#define AP_CHANNEL 1
-#define MAX_CONNECTIONS 2
-#define HIDDEN_SSID false
-
 #define HTTP_PORT 80
 #define HTTP_OK 200
 #define HTTP_NOT_FOUND 404
 #define HTTP_UNPROCESSABLE_ENTITY 422
 
 #define WEBSOCKETS_PORT 9090
+
+#define BATTERY_PIN A0
+#define BATTERY_SAMPLE_RATE 3000
+#define MIN_VOLTAGE 6.0
+#define MAX_VOLTAGE 8.4
 
 #define MOTOR_A_DIRECTION_PIN 0
 #define MOTOR_A_THROTTLE_PIN 5
@@ -28,90 +29,163 @@
 #define REVERSE 0
 #define MIN_THROTTLE 500
 #define MAX_THROTTLE 1000
-#define DEFAULT_THROTTLE 750
 
 #define I2C_SDA_PIN 12
 #define I2C_SCL_PIN 14
 #define I2C_CLOCK 400000
 
 #define MPU_ADDRESS 0x68
-#define INTERRUPT_PIN 10
-#define LSB_SENSITIVITY 8192.0
+#define INTERRUPT_PIN 13
+#define CALIBRATION_LOOPS 8
 #define TEMPERATURE_SENSITIVITY 340.0
 #define TEMPERATURE_CONSTANT 36.53
 #define TEMPERATURE_SAMPLE_RATE 5000
-#define YAW_LOCK_TOLERANCE 2.5 * M_PI / 180.0
-#define BACKOFF_THROTTLE 0
-#define BACKOFF_DURATION 10
+#define ROTATE_SAMPLE_RATE 10
+#define ROTATION_TOLERANCE 1.0 * DEGREES_TO_RADIANS
+#define STABILIZER_SAMPLE_RATE 50
+#define STABILIZER_THRESHOLD 2.0 * DEGREES_TO_RADIANS
+#define STABILIZER_TOLERANCE 0.05 * STABILIZER_THRESHOLD
+#define BACKOFF_AMOUNT 0.3
+#define ROLLOVER_SAMPLE_RATE 1000
+#define ROLLOVER_THRESHOLD M_PI / 2.0
 
-#define BATTERY_PIN A0
-#define BATTERY_SAMPLE_RATE 2500
-#define MIN_VOLTAGE 6.0
-#define MAX_VOLTAGE 8.4
+#define SONAR_TRIGGER_PIN 10
+#define SONAR_ECHO_PIN 15
+#define SONAR_OFFSET 3
+#define MAX_PING_RANGE 500
+#define PING_RANGE 250
+#define PING_TIMEOUT PING_RANGE * CM_ROUNDTRIP_US
+#define MAX_PING_TIMEOUT MAX_PING_RANGE * CM_ROUNDTRIP_US
+#define ECHO_OFFSET SONAR_OFFSET * CM_ROUNDTRIP_US
+#define NUM_PINGS 3
+#define SONAR_SAMPLE_RATE 50
 
-#define TETHER_SAMPLE_RATE 250
+#define DEGREES_TO_RADIANS M_PI / 180.0
 
-const String _ssid = "Kirby The Tank Robot";
-const String _password = "KeepSummerSafe";
+#define SPEED_SOUND 331.5
+#define SOUND_TEMP_COEFF 0.60
+#define CM_ROUNDTRIP_US 57
 
-const IPAddress ip(192,168,4,1);
-const IPAddress gateway(192,168,4,1);
-const IPAddress subnet(255,255,255,0);
+StaticJsonDocument<500> config;
 
 ESP8266WebServer server(HTTP_PORT);
 
 WebSocketsServer socket = WebSocketsServer(WEBSOCKETS_PORT);
 
-unsigned int _throttle = DEFAULT_THROTTLE;
-String _direction = "forward";
+Ticker battery_timer;
+float _battery_voltage;
+
+char* _direction;
+unsigned int _throttle = MAX_THROTTLE - 0.5 * (MAX_THROTTLE - MIN_THROTTLE);
 bool _stopped = true;
 
 MPU6050 mpu(MPU_ADDRESS);
 
+Ticker temperature_timer, rotation_timer, stabilizer_timer, rollover_timer;
+
 Quaternion _q;
 VectorFloat _gravity;
-VectorInt16 _aa, _aa_real, _aa_world;
 float _orientation[3];
 float _temperature;
-float _yaw_lock;
-uint16_t _dmp_packet_size;
 uint8_t _dmp_fifo_buffer[64];
+uint16_t _dmp_packet_size;
 bool _dmp_ready = false;
 bool _stabilize = true;
-
-Ticker temperature_timer;
-
-float _battery_voltage;
-
-Ticker battery_timer;
-
-Ticker tether_timer;
+bool _backing_off = false;
+bool _rotating = false;
+float _yaw_lock;
 
 void ICACHE_RAM_ATTR dmpDataReady();
 
+Ticker sonar_timer;
+float _adjusted_speed_sound_us = SPEED_SOUND / 10000.0;
+unsigned int _ping_buffer[NUM_PINGS];
+uint8_t _ping_counter;
+float _distance_to_object;
+
 /**
- * Bootstrap routine to run once.
+ * Bootstrap routine to setup the robot.
  */
-void setup() {
-  Serial.begin(SERIAL_BAUD);
+void setup() {  
+  setupSerial();
+  setupSPIFFS();
+  loadConfig();
+
+  setupAccessPoint();
+  setupHttpServer();
+  setupWebsocketsServer();
+
+  setupBattery();
   
-  WiFi.softAPConfig(ip, gateway, subnet);
-  WiFi.softAP(_ssid, _password, AP_CHANNEL, HIDDEN_SSID, MAX_CONNECTIONS);
+  setupMotors();
 
-  Serial.println("Access point ready");
-  Serial.print("SSID: ");
-  Serial.println(_ssid);
-  Serial.print("IP Address: ");
-  Serial.println(WiFi.softAPIP());
-  Serial.print("MAC Address: ");
-  Serial.println(WiFi.softAPmacAddress());
+  setupI2C();
+  setupMPU();
+  setupDMP();
 
+  setupSonar();
+}
+
+/**
+ * Set up the serial interface.
+ */
+void setupSerial() {
+  Serial.begin(SERIAL_BAUD);
+}
+
+/**
+ * Set up the SPI Flash Filesystem.
+ */
+void setupSPIFFS() {
   if (SPIFFS.begin()) {
     Serial.println("SPIFFS mounted successfully");
   } else {
     Serial.println("Failed to mount SPIFFS");
   }
+}
 
+/**
+ * Load the configuration file into memory.
+ */
+void loadConfig() {
+  char buffer[500];
+    
+  File f = SPIFFS.open("/config.json", "r");
+
+  f.readBytes(buffer, f.size());
+
+  deserializeJson(config, buffer);
+}
+
+/**
+ * Set up the wireless access point.
+ */
+void setupAccessPoint() {
+  const char* ssid = config["ap"]["ssid"];
+  const char* password = config["ap"]["password"];
+  int channel = config["ap"]["channel"];
+  bool hidden = config["ap"]["hidden"];
+  int max_connections = config["ap"]["max_connections"];
+  const IPAddress ip(192,168,4,1);
+  const IPAddress gateway(192,168,4,1);
+  const IPAddress subnet(255,255,255,0);
+  
+  WiFi.softAPConfig(ip, gateway, subnet);
+  WiFi.softAP(ssid, password, channel, hidden, max_connections);
+
+  Serial.println("Access point ready");
+  Serial.print("SSID: ");
+  Serial.println(ssid);
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.softAPIP());
+  Serial.print("MAC Address: ");
+  Serial.println(WiFi.softAPmacAddress());
+}
+
+/**
+ * Set up the HTTP server.
+ */
+void setupHttpServer() {
   server.serveStatic("/", SPIFFS, "/index.html");
   server.serveStatic("/app.js", SPIFFS, "/app.js");
   server.serveStatic("/app.css", SPIFFS, "/app.css");
@@ -133,21 +207,36 @@ void setup() {
 
   server.begin();
 
-  Serial.print("HTTP Server listening on port ");
+  Serial.print("HTTP server listening on port ");
   Serial.println(HTTP_PORT);
-  
+}
+
+/**
+ * Set up the websockets server.
+ */
+void setupWebsocketsServer() {
   socket.begin();
   socket.onEvent(handleWebSocket);
 
-  Serial.print("Websockets Server listening on port ");
+  Serial.print("Websockets server listening on port ");
   Serial.println(WEBSOCKETS_PORT);
+}
 
+/**
+ * Set up the battery voltmeter.
+ */
+void setupBattery() {
   pinMode(BATTERY_PIN, INPUT);
   
-  battery_timer.attach_ms(BATTERY_SAMPLE_RATE, checkBattery);
+  battery_timer.attach_ms(BATTERY_SAMPLE_RATE, updateBattery);
 
-  Serial.println("Battery voltmeter initialized");
+  Serial.println("Battery voltmeter enabled");
+}
 
+/**
+ * Set up the motors.
+ */
+void setupMotors() {
   pinMode(MOTOR_A_DIRECTION_PIN, OUTPUT);
   pinMode(MOTOR_A_THROTTLE_PIN, OUTPUT);
 
@@ -156,15 +245,25 @@ void setup() {
 
   stop();
 
-  Serial.println("Motors initialized");
+  Serial.println("Motors enabled");
+}
 
+/**
+ * Set up the I2C bus.
+ */
+void setupI2C() {
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
   Wire.setClock(I2C_CLOCK);
 
-  pinMode(INTERRUPT_PIN, INPUT);
+  Serial.println("I2C bus initialized");
+}
 
-  mpu.setFullScaleGyroRange(MPU6050_GYRO_FS_250);
+/**
+ * Set up and calibrate the MPU accelerometer, gyroscope, and temperature sensor.
+ */
+void setupMPU() {
   mpu.setFullScaleAccelRange(MPU6050_ACCEL_FS_2);
+  mpu.setFullScaleGyroRange(MPU6050_GYRO_FS_250);
   mpu.initialize();
 
   if (mpu.testConnection()) {
@@ -173,73 +272,83 @@ void setup() {
     Serial.println("MPU failure");
   }
 
-  Serial.println("Calibrating gyroscope and accelerometer");
+  Serial.print("Calibrating ");
 
-  mpu.CalibrateAccel(6);
-  mpu.CalibrateGyro(6);
+  mpu.CalibrateAccel(CALIBRATION_LOOPS);
+  mpu.CalibrateGyro(CALIBRATION_LOOPS);
   mpu.PrintActiveOffsets();
-  
+
+  mpu.setSleepEnabled(false);
+  mpu.setStandbyXAccelEnabled(true);
+  mpu.setStandbyYAccelEnabled(true);
+  mpu.setStandbyZAccelEnabled(true);
+
+  temperature_timer.attach_ms(TEMPERATURE_SAMPLE_RATE, updateTemperature);
+}
+
+/**
+ * Set up the Digital Motion Processor.
+ */
+void setupDMP() {
   mpu.dmpInitialize();
   mpu.setDMPEnabled(true);
-  mpu.setSleepEnabled(false);
 
   _dmp_packet_size = mpu.dmpGetFIFOPacketSize();
 
+  pinMode(INTERRUPT_PIN, INPUT);
+
   attachInterrupt(digitalPinToInterrupt(INTERRUPT_PIN), dmpDataReady, RISING);
 
-  temperature_timer.attach_ms(TEMPERATURE_SAMPLE_RATE, updateTemperature);
-
   Serial.println("DMP initialized");
-  
-  tether_timer.attach_ms(TETHER_SAMPLE_RATE, checkTether);
+}
 
-  Serial.println("WiFi tether activated");
+/**
+ * Set up the sonar distance sensor.
+ */
+void setupSonar() {
+  pinMode(SONAR_TRIGGER_PIN, OUTPUT);
+  pinMode(SONAR_ECHO_PIN, INPUT);
+
+  sonar_timer.attach_ms(SONAR_SAMPLE_RATE, updateDistanceToObject);
+
+  Serial.println("Sonar enabled");
 }
 
 /**
  * Main event loop.
  */
 void loop() {
-  if (_dmp_ready) {
-    uint8_t mpu_int_status = mpu.getIntStatus();
-
-    if (mpu_int_status & 0x02) {
-      readDmpBuffer();
-      
-      updateOrientation();
-    } else if (mpu_int_status & 0x10) {
-      mpu.resetFIFO();
-    }
-
-    _dmp_ready = false;
-  }
-
-  if (!_stopped && _stabilize) {
-    if (_direction == "forward" || _direction == "reverse") {
-      float delta = _yaw_lock - _orientation[0];
-  
-      if (fabs(delta) > YAW_LOCK_TOLERANCE) {
-        stabilize(delta);
-      }
-    }
-  }
-
   server.handleClient();
   
   socket.loop();
+  
+  if (_dmp_ready) {
+    uint8_t mpu_int_status = mpu.getIntStatus();
+    uint16_t fifo_count = mpu.getFIFOCount();
+
+    if (fifo_count % _dmp_packet_size != 0) {
+      mpu.resetFIFO();
+    } else if (mpu_int_status & 0x10 || fifo_count >= 1024) {
+      mpu.resetFIFO();
+    } else if (mpu_int_status & 0x02) {
+      readDMPBuffer(fifo_count);
+      
+      updateOrientation();
+    }
+  }
 }
 
 /**
  * Handle the robot status request.
  */
 void handleStatus() {
-  StaticJsonDocument<300> doc;
-  char buffer[300];
+  StaticJsonDocument<500> doc;
+  char buffer[500];
 
-  doc["throttle"] = _throttle;
   doc["direction"] = _direction;
-  doc["stabilize"] = _stabilize;
+  doc["throttle"] = _throttle;
   doc["stopped"] = _stopped;
+  doc["stabilize"] = _stabilize;
   doc["battery_voltage"] = _battery_voltage;
   doc["temperature"] = _temperature;
   
@@ -294,7 +403,7 @@ void handleStop() {
 }
 
 /**
- * Handle the set speed request.
+ * Handle the set throttle request.
  */
 void handleSetThrottle() {
   StaticJsonDocument<100> doc;
@@ -313,7 +422,7 @@ void handleSetThrottle() {
 }
 
 /**
- * Handle an enable movement stabilizer request.
+ * Handle an enable stabilizer request.
  */
 void handleEnableStabilizer() {
   setStabilizer(true);
@@ -322,7 +431,7 @@ void handleEnableStabilizer() {
 }
 
 /**
- * Handle a disable movement stabilizer request.
+ * Handle a disable stabilizer request.
  */
 void handleDisableStabilizer() {
   setStabilizer(false);
@@ -338,13 +447,6 @@ int handleNotFound() {
 }
 
 /**
- * Handle a websockets request.
- */
-void handleWebSocket(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
-  //
-}
-
-/**
  * Move forward.
  */
 void forward() {
@@ -353,8 +455,32 @@ void forward() {
 
   _direction = "forward";
   _yaw_lock = _orientation[0];
+  
+  if (_stabilize) {
+    stabilizer_timer.attach_ms(STABILIZER_SAMPLE_RATE, stabilize);
+  }
 
   go();
+}
+
+/**
+ * Turn 90 degrees to the left.
+ */
+void turnLeft() {
+  rotateLeft(90 * DEGREES_TO_RADIANS);
+}
+
+/**
+ * Rotate the vehicle x radians to the left.
+ * 
+ * @param float radians
+ */
+void rotateLeft(float radians) {
+  left();
+    
+  _yaw_lock = calculateAngle(_orientation[0], -radians);
+
+  rotation_timer.attach_ms(ROTATE_SAMPLE_RATE, rotate);
 }
 
 /**
@@ -367,6 +493,26 @@ void left() {
   _direction = "left";
 
   go();
+}
+
+/**
+ * Turn 90 degrees to the right.
+ */
+void turnRight() {
+  rotateRight(90 * DEGREES_TO_RADIANS);
+}
+
+/**
+ * Rotate the vehicle by x radians to the right.
+ * 
+ * @param float radians
+ */
+void rotateRight(float radians) {
+  right();
+
+  _yaw_lock = calculateAngle(_orientation[0], radians);
+
+  rotation_timer.attach_ms(ROTATE_SAMPLE_RATE, rotate);
 }
 
 /**
@@ -391,32 +537,43 @@ void reverse() {
   _direction = "reverse";
   _yaw_lock = _orientation[0];
 
+  if (_stabilize) {
+    stabilizer_timer.attach_ms(STABILIZER_SAMPLE_RATE, stabilize);
+  }
+
   go();
 }
 
 /**
- * Engage the motors and move in a direction at a particular speed.
+ * Engage the motors.
  */
 void go() {
   analogWrite(MOTOR_A_THROTTLE_PIN, _throttle);
   analogWrite(MOTOR_B_THROTTLE_PIN, _throttle);
 
+  rollover_timer.attach_ms(ROLLOVER_SAMPLE_RATE, detectRollover);
+  rotation_timer.detach();
+
   _stopped = false;
 }
 
 /**
- * Disengage the motors and come to a stop.
+ * Disengage the motors.
  */
 void stop() {
   analogWrite(MOTOR_A_THROTTLE_PIN, 0);
   analogWrite(MOTOR_B_THROTTLE_PIN, 0);
+
+  rotation_timer.detach();
+  stabilizer_timer.detach();
+  rollover_timer.detach();
 
   _stopped = true;
   _direction = "";
 }
 
 /**
- * Actuate the throttle of the motors.
+ * Actuate the throttle of the motor controller.
  * 
  * @param int speed
  */
@@ -424,12 +581,13 @@ void setThrottle(int throttle) {
   _throttle = max(MIN_THROTTLE, min(throttle, MAX_THROTTLE));
 
   if (!_stopped) {
-    go();
+    analogWrite(MOTOR_A_THROTTLE_PIN, _throttle);
+    analogWrite(MOTOR_B_THROTTLE_PIN, _throttle);
   }
 }
 
 /**
- * Turn the linear movement stabilizer on and off.
+ * Turn the linear stabilizer on and off.
  * 
  * @param bool stabilize
  */
@@ -445,16 +603,18 @@ void dmpDataReady() {
 }
 
 /**
- * Read the MPU data buffer.
+ * Read the DMP FIFO buffer into memory.
+ * 
+ * @param int fifo_count
  */
-void readDmpBuffer() {
-  uint16_t fifo_count = mpu.getFIFOCount();
-  
+void readDMPBuffer(int fifo_count) {
   while (fifo_count >= _dmp_packet_size) {
     mpu.getFIFOBytes(_dmp_fifo_buffer, _dmp_packet_size);
 
     fifo_count -= _dmp_packet_size;
   }
+
+  _dmp_ready = false;
 }
 
 /**
@@ -467,62 +627,18 @@ void updateOrientation() {
 }
 
 /**
- * Compute the real world acceleration using the DMP.
- */
-void updateAcceleration() {
-  mpu.dmpGetAccel(&_aa, _dmp_fifo_buffer);
-  mpu.dmpGetLinearAccel(&_aa_real, &_aa, &_gravity);
-  mpu.dmpGetLinearAccelInWorld(&_aa_world, &_aa_real, &_q);
-}
-
-/**
- * Momentarily let off the throttle on the side that is ahead.
- * 
- * @param float delta
- */
-void stabilize(float delta) {
-  if (_direction == "forward") {
-    if (delta > 0.0) {
-      analogWrite(MOTOR_A_THROTTLE_PIN, BACKOFF_THROTTLE);
-
-      delay(BACKOFF_DURATION);
-
-      analogWrite(MOTOR_A_THROTTLE_PIN, _throttle);
-    } else {
-      analogWrite(MOTOR_B_THROTTLE_PIN, BACKOFF_THROTTLE);
-
-      delay(BACKOFF_DURATION);
-
-      analogWrite(MOTOR_B_THROTTLE_PIN, _throttle);
-    }
-  } else if (_direction == "reverse") {
-    if (delta < 0.0) {
-      analogWrite(MOTOR_A_THROTTLE_PIN, BACKOFF_THROTTLE);
-
-      delay(BACKOFF_DURATION);
-
-      analogWrite(MOTOR_A_THROTTLE_PIN, _throttle);
-    } else {
-      analogWrite(MOTOR_B_THROTTLE_PIN, BACKOFF_THROTTLE);
-
-      delay(BACKOFF_DURATION);
-
-      analogWrite(MOTOR_B_THROTTLE_PIN, _throttle);
-    }
-  }
-}
-
-/**
  * Update the temperature reading from the MPU and broadcast to connected sockets.
  */
-void updateTemperature() {  
-  int raw = mpu.getTemperature();
-
+void updateTemperature() {
+  int32_t raw = mpu.getTemperature();
+  
   _temperature = raw / TEMPERATURE_SENSITIVITY + TEMPERATURE_CONSTANT;
 
+  _adjusted_speed_sound_us = (SPEED_SOUND + SOUND_TEMP_COEFF * _temperature) / 10000.0;
+
   if (socket.connectedClients() > 0) {
-    StaticJsonDocument<100> doc;
-    char buffer[100];
+    StaticJsonDocument<200> doc;
+    char buffer[200];
   
     doc["name"] = "temperature-update";
     doc["temperature"] = _temperature;
@@ -536,18 +652,14 @@ void updateTemperature() {
 /**
  * Update the battery voltage and broadcast the event to any connected websockets clients.
  */
-void checkBattery() {
-  float raw = analogRead(BATTERY_PIN);
+void updateBattery() {
+  uint8_t raw = analogRead(BATTERY_PIN);
 
   _battery_voltage = raw / 1024.0 * MAX_VOLTAGE;
 
-  if (_battery_voltage <= MIN_VOLTAGE) {
-    stop();
-  }
-
   if (socket.connectedClients() > 0) {
-    StaticJsonDocument<100> doc;
-    char buffer[100];
+    StaticJsonDocument<200> doc;
+    char buffer[200];
   
     doc["name"] = "battery-update";
     doc["battery_voltage"] = _battery_voltage;
@@ -559,10 +671,207 @@ void checkBattery() {
 }
 
 /**
- * Check that a client is connected or stop movement.
+ * Detect if the vehicle has rolled over.
  */
-void checkTether() {
-  if (WiFi.softAPgetStationNum() == 0) {
+void detectRollover() {
+  if (fabs(_orientation[1]) > ROLLOVER_THRESHOLD || fabs(_orientation[2]) > ROLLOVER_THRESHOLD) {
     stop();
+
+    if (socket.connectedClients() > 0) {
+      StaticJsonDocument<100> doc;
+      char buffer[100];
+  
+      doc["name"] = "rollover-detected";
+
+      serializeJson(doc, buffer);
+
+      socket.broadcastTXT(buffer);
+    }
   }
+}
+
+/**
+ * Check that the vehicle is within a threshold of the yaw lock and momentarily let off
+ * the throttle on the side that is ahead.
+ */
+void stabilize() {
+  float delta = _yaw_lock - _orientation[0];
+  
+  if (!_backing_off) {
+    if (fabs(delta) > STABILIZER_THRESHOLD) {
+      unsigned int backoff_throttle = round(_throttle * (1.0 - BACKOFF_AMOUNT));
+  
+      if (_direction == "forward") {
+        if (delta > 0.0) {
+          analogWrite(MOTOR_A_THROTTLE_PIN, backoff_throttle);
+        } else {
+          analogWrite(MOTOR_B_THROTTLE_PIN, backoff_throttle);
+        }
+      } else if (_direction == "reverse") {
+        if (delta < 0.0) {
+          analogWrite(MOTOR_A_THROTTLE_PIN, backoff_throttle);
+        } else {
+          analogWrite(MOTOR_B_THROTTLE_PIN, backoff_throttle);
+        }
+      }
+
+      _backing_off = true;
+    }
+  } else if (fabs(delta) < STABILIZER_TOLERANCE) {
+    if (_direction == "forward") {
+      analogWrite(MOTOR_A_THROTTLE_PIN, _throttle);
+      analogWrite(MOTOR_B_THROTTLE_PIN, _throttle);
+    } else if (_direction == "reverse") {
+      analogWrite(MOTOR_A_THROTTLE_PIN, _throttle);
+      analogWrite(MOTOR_B_THROTTLE_PIN, _throttle);
+    }
+
+    _backing_off = false;
+  }
+}
+
+/**
+ * Rotate the vehicle.
+ */
+void rotate() {
+  float delta = _yaw_lock - _orientation[0];
+  
+  if (fabs(delta) < ROTATION_TOLERANCE) {
+    stop();
+
+    rotation_timer.detach();
+  }
+}
+
+/**
+ * Calculate the final angle of a rotation from a starting point with the addition of delta
+ * in radians.
+ * 
+ * @param float start
+ * @param float delta
+ * @return float
+ */
+float calculateAngle(float start, float delta) {
+  float end = start + delta;
+  
+  if (fabs(end) > M_PI) {
+    end = -(M_PI - fmod(end, M_PI));
+  }
+
+  return end;
+}
+
+/**
+ * Update the distance from the robot to an object using the sonar.
+ */
+void updateDistanceToObject() {
+  unsigned int t = ping(PING_TIMEOUT);
+
+  _ping_buffer[_ping_counter] = t;
+
+  _ping_counter++;
+  
+  if (_ping_counter >= NUM_PINGS) {
+    int mu = median(_ping_buffer) - ECHO_OFFSET;
+
+    if (mu > 0) {
+      _distance_to_object = echoToDistance(mu);
+    } else {
+      _distance_to_object = INFINITY;
+    }
+
+    _ping_counter = 0;
+  }
+}
+
+/**
+ * Calculate the echo time in microseconds to distance in centimeters using the adjusted
+ * speed of sound constant.
+ */
+float echoToDistance(int t) {
+  return (t / 2.0) * _adjusted_speed_sound_us;
+}
+
+/**
+ * Ping using the sonar and return the duration of the echo in microseconds.
+ * 
+ * @param int timeout
+ * @returns unsigned int
+ */
+unsigned int ping(int timeout) {
+  digitalWrite(SONAR_TRIGGER_PIN, LOW);
+  delayMicroseconds(2);
+
+  digitalWrite(SONAR_TRIGGER_PIN, HIGH);
+  delayMicroseconds(10);
+
+  digitalWrite(SONAR_TRIGGER_PIN, LOW);
+
+  unsigned int t = pulseIn(SONAR_ECHO_PIN, HIGH, min(timeout, MAX_PING_TIMEOUT));
+
+  return t;
+}
+
+/**
+ * Return the median value of an array of echo timestamps.
+ * 
+ * @param unsigned int data[]
+ * @return unsigned int
+ */
+unsigned int median(unsigned int data[]) {
+  unsigned int median;
+  
+  uint8_t n = sizeof(data) / sizeof(int);
+
+  bsort(data, n);
+
+  uint8_t mid = n / 2;
+
+  if (n % 2 == 1) {
+    median = data[mid];
+  } else {
+    median = (data[mid - 1] + data[mid]) / 2;
+  }
+
+  return median;
+}
+
+/**
+ * Sort an array of n integer timestamps from lowest to highest using the bubble sort
+ * algorithm.
+ * 
+ * @param unsigned int data[]
+ * @param uint8_t n
+ */
+void bsort(unsigned int data[], uint8_t n) {
+  uint8_t i, j, k;
+  bool swapped;
+   
+  for (i = 0; i < n - 1; i++) {
+    swapped = false;
+     
+    for (j = 0; j < n - i - 1; j++) {
+      k = j + 1;
+      
+      if (data[j] > data[k]) {
+        float temp = data[j];
+
+        data[j] = data[k]; 
+        data[k] = temp; 
+           
+        swapped = true;
+      }
+    } 
+   
+    if (!swapped) {
+      break; 
+    }
+  }
+}
+
+ /**
+ * Handle a websockets request.
+ */
+void handleWebSocket(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
+  //
 }

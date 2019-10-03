@@ -22,7 +22,7 @@
                     </span>
                 </div>
                 <div>
-                    <p class="heading is-size-7">{{ battery_percentage }} %</p>
+                    <p class="heading is-size-7">{{ battery_percentage }}%</p>
                     <span class="icon is-large">
                         <i class="fas fa-2x" :class="battery_indicator"></i>
                     </span>
@@ -63,7 +63,7 @@
                 return Math.max(0.0, Math.round(((this.tank.battery_voltage - MIN_VOLTAGE) / (MAX_VOLTAGE - MIN_VOLTAGE) * 100.0)));
             },
             battery_indicator() {
-                const p = this.tank.battery_percentage;
+                const p = this.battery_percentage;
 
                 if (p <= 5.0) {
                     return 'fa-battery-empty';
