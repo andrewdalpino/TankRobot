@@ -1,6 +1,6 @@
 {
     "name": "Kirby The Tank Robot",
-    "short_name": "Kirby",
+    "short_name": "Tank Robot",
     "start_url": "/",
     "display": "standalone",
     "icons": [

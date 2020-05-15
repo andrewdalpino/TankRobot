@@ -17,10 +17,9 @@
         data() {
             return {
                 tank: {
-                    throttle: 750,
-                    direction: '',
-                    stabilize: true,
-                    stopped: true,
+                    throttle: 0.0,
+                    direction: undefined,
+                    stopped: undefined,
                     battery_voltage: 0.0,
                     temperature: 0.0,
                 },
@@ -35,26 +34,19 @@
                 });
             });
 
-            this.$options.sockets.onmessage = (message) => {
-                let data = JSON.parse(message.data);
+            this.$sse('/events', { format: 'json' }).then(sse => {
+                sse.subscribe('battery-update', (message, event) => {
+                    this.tank.battery_voltage = message.battery_voltage;
+                });
 
-                switch (data.name) {
-                    case 'battery-update':
-                        this.tank.battery_voltage = data.battery_voltage;
+                sse.subscribe('temperature-update', (message, event) => {
+                    this.tank.temperature = message.temperature;
+                });
 
-                        break;
-
-                    case 'temperature-update':
-                        this.tank.temperature = data.temperature;
-
-                        break;
-
-                    case 'rollover-detected':
-                        bus.$emit('rollover-detected');
-                        
-                        break;
-                }
-            }
+                sse.subscribe('rollover-detected', (message, event) => {
+                    bus.$emit('rollover-detected');
+                });
+            });
 
             bus.$on('moving', (payload) => {
                 this.tank.direction = payload.direction;
@@ -64,18 +56,10 @@
             bus.$on('throttle-set', (payload) => {
                 this.tank.throttle = payload.throttle;
             });
-
-            bus.$on('stabilizer-enabled', (payload) => {
-                this.tank.stabilize = true;
-            });
-
-            bus.$on('stabilizer-disabled', (payload) => {
-                this.tank.stabilize = false;
-            });
-
+            
             bus.$on('stopping', (payload) => {
                 this.tank.stopped = true;
-                this.tank.direction = '';
+                this.tank.direction = undefined;
             });
         },
     }
