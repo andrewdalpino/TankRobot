@@ -18,10 +18,13 @@
             return {
                 tank: {
                     throttle: 0.0,
-                    direction: undefined,
-                    stopped: undefined,
                     battery_voltage: 0.0,
                     temperature: 0.0,
+                    position: {
+                        lat: undefined,
+                        lon: undefined,
+                    },
+                    num_satellites: 0,
                 },
             };
         },
@@ -34,13 +37,16 @@
                 });
             });
 
-            this.$sse('/events', { format: 'json' }).then(sse => {
-                sse.subscribe('battery-update', (message, event) => {
+            this.$sse('/events', { format: 'json' }).then((sse) => {
+                sse.subscribe('status-update', (message, event) => {
                     this.tank.battery_voltage = message.battery_voltage;
+                    this.tank.temperature = message.temperature;
+                    this.tank.num_satellites = message.num_satellites;
                 });
 
-                sse.subscribe('temperature-update', (message, event) => {
-                    this.tank.temperature = message.temperature;
+                sse.subscribe('position-update', (message, event) => {
+                    this.tank.position.lat = message.lat;
+                    this.tank.position.lon = message.lon;
                 });
 
                 sse.subscribe('rollover-detected', (message, event) => {
@@ -48,18 +54,8 @@
                 });
             });
 
-            bus.$on('moving', (payload) => {
-                this.tank.direction = payload.direction;
-                this.tank.stopped = false;
-            });
-
             bus.$on('throttle-set', (payload) => {
                 this.tank.throttle = payload.throttle;
-            });
-            
-            bus.$on('stopping', (payload) => {
-                this.tank.stopped = true;
-                this.tank.direction = undefined;
             });
         },
     }

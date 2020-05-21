@@ -4,15 +4,15 @@
         <div class="level is-mobile">
             <div class="level-item has-text-centered">
                 <div>
-                    <p class="heading is-size-7">{{ throttle_percentage }}%</p>
-                    <span class="icon is-large">
-                        <i class="fas fa-2x fa-atom"></i>
-                    </span>
-                </div>
-                <div>
                     <p class="heading is-size-7">{{ tank.temperature.toFixed(1) }}°</p>
                     <span class="icon is-large">
                         <i class="fas fa-2x" :class="temperature_indicator"></i>
+                    </span>
+                </div>
+                <div>
+                    <p class="heading is-size-7">{{ tank.num_satellites }}</p>
+                    <span class="icon is-large">
+                        <i class="fas fa-2x fa-satellite"></i>
                     </span>
                 </div>
                 <div>
@@ -33,9 +33,6 @@
 </template>
 
 <script>
-    const MIN_THROTTLE = 500;
-    const MAX_THROTTLE = 1000;
-
     const MIN_VOLTAGE = 6.0;
     const MAX_VOLTAGE = 8.4;
 
@@ -47,9 +44,6 @@
             },
         },
         computed: {
-            throttle_percentage() {
-                return Math.round(((this.tank.throttle - MIN_THROTTLE) * 100) / (MAX_THROTTLE - MIN_THROTTLE));
-            },
             temperature_indicator() {
                 if (this.tank.temperature < 5.0) {
                     return 'fa-temperature-low';

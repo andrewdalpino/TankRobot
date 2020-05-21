@@ -1,7 +1,8 @@
 import Vue from 'vue';
-import VueRouter from 'vue-router'
+import VueRouter from 'vue-router';
 import VueAxios from 'vue-axios';
 import VueSSE from 'vue-sse';
+import VueGeolocation from 'vue-browser-geolocation';
 import routes from './routes';
 
 require('./scss/app.scss');
@@ -45,6 +46,7 @@ files.keys().map(key => Vue.component(key.split('/').pop().split('.')[0], files(
 Vue.use(VueRouter);
 Vue.use(VueAxios, axios);
 Vue.use(VueSSE);
+Vue.use(VueGeolocation);
 
 const router = new VueRouter({
     mode: 'history',

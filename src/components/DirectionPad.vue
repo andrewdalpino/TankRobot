@@ -2,7 +2,7 @@
     <div class="container">
         <h3 class="label">Direction</h3>
         <div class="field has-text-centered">
-            <a class="button is-large" :class="tank.direction === 'forward' && !tank.stopped ? 'is-success' : 'is-info'" @click="forward()">
+            <a class="button is-large" :class="direction === 'forward' && !stopped ? 'is-success' : 'is-info'" @click="forward()">
                 <span class="icon">
                     <i class="fas fa-chevron-circle-up"></i>
                 </span>
@@ -10,21 +10,21 @@
         </div>
         <div class="field is-grouped is-grouped-centered">
             <p class="control">
-                <a class="button is-large" :class="tank.direction === 'left' && !tank.stopped ? 'is-success' : 'is-info'" @click="left()">
+                <a class="button is-large" :class="direction === 'left' && !stopped ? 'is-success' : 'is-info'" @click="left()">
                     <span class="icon">
                         <i class="fas fa-chevron-circle-left"></i>
                     </span>
                 </a>
             </p>
             <p class="control">
-                <a class="button is-large" :class="tank.stopped ? 'is-danger' : 'is-link'" @click="stop()">
+                <a class="button is-large" :class="stopped ? 'is-danger' : 'is-link'" @click="stop()">
                     <span class="icon">
                         <i class="fas fa-stop-circle"></i>
                     </span>
                 </a>
             </p>
             <p class="control">
-                <a class="button is-large" :class="tank.direction === 'right' && !tank.stopped ? 'is-success' : 'is-info'"  @click="right()">
+                <a class="button is-large" :class="direction === 'right' && !stopped ? 'is-success' : 'is-info'"  @click="right()">
                     <span class="icon">
                         <i class="fas fa-chevron-circle-right"></i>
                     </span>
@@ -32,7 +32,7 @@
             </p>
         </div>
         <div class="field has-text-centered">
-            <a class="button is-large" :class="tank.direction === 'reverse' && !tank.stopped ? 'is-success' : 'is-info'" @click="reverse()">
+            <a class="button is-large" :class="direction === 'reverse' && !stopped ? 'is-success' : 'is-info'" @click="reverse()">
                 <span class="icon">
                     <i class="fas fa-chevron-circle-down"></i>
                 </span>
@@ -45,6 +45,12 @@
     import bus from '../bus';
 
     export default {
+        data() {
+            return {
+                direction: undefined,
+                stopped: true,
+            }
+        },
         props: {
             tank: {
                 type: Object,
@@ -53,66 +59,63 @@
         },
         methods: {
             forward() {
-                if (this.tank.direction !== 'forward') {
-                    this.$http.put('/movement/forward').then((response) => {
-                        bus.$emit('moving', {
-                            direction: 'forward',
-                        });
-                    }).catch((error) => {
+                if (this.direction !== 'forward') {
+                    this.$http.put('/movement/forward').catch((error) => {
                         bus.$emit('communication-error', {
                             error,
                         });
                     });
                 }
+
+                this.direction = 'forward';
+                this.stopped = false;
             },
             left() {
-                if (this.tank.direction !== 'left') {
-                    this.$http.put('/movement/left').then((response) => {
-                        bus.$emit('moving', {
-                            direction: 'left',
-                        });
-                    }).catch((error) => {
+                if (this.direction !== 'left') {
+                    this.$http.put('/movement/left').catch((error) => {
                         bus.$emit('communication-error', {
                             error,
                         });
                     });
+
+                    this.direction = 'left';
+                    this.stopped = false;
                 }
             },
             right() {
-                if (this.tank.direction !== 'right') {
-                    this.$http.put('/movement/right').then((response) => {
-                        bus.$emit('moving', {
-                            direction: 'right',
-                        });
-                    }).catch((error) => {
+                if (this.direction !== 'right') {
+                    this.$http.put('/movement/right').catch((error) => {
                         bus.$emit('communication-error', {
                             error,
                         });
                     });
+
+                    this.direction = 'right';
+                    this.stopped = false;
                 }
             },
             reverse() {
-                if (this.tank.direction !== 'reverse') {
-                    this.$http.put('/movement/reverse').then((response) => {
-                        bus.$emit('moving', {
-                            direction: 'reverse',
-                        });
-                    }).catch((error) => {
+                if (this.direction !== 'reverse') {
+                    this.$http.put('/movement/reverse').catch((error) => {
                         bus.$emit('communication-error', {
                             error,
                         });
                     });
+
+                    this.direction = 'reverse';
+                    this.stopped = false;
                 }
             },
             stop() {
-                if (!this.tank.stopped) {
-                    this.$http.put('/movement/stop').then((response) => {
-                        bus.$emit('stopping');
-                    }).catch((error) => {
+                if (!this.stopped) {
+                    this.$http.put('/movement/stop').catch((error) => {
                         bus.$emit('communication-error', {
                             error,
                         });
                     });
+
+                    this.direction = undefined;
+                    this.stopped = true;
                 }
             },
         },
