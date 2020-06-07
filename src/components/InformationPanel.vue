@@ -10,12 +10,6 @@
                     </span>
                 </div>
                 <div>
-                    <p class="heading is-size-7">{{ tank.num_satellites }}</p>
-                    <span class="icon is-large">
-                        <i class="fas fa-2x fa-satellite"></i>
-                    </span>
-                </div>
-                <div>
                     <p class="heading is-size-7">{{ tank.battery_voltage.toFixed(1) }} V</p>
                     <span class="icon is-large">
                         <i class="fas fa-2x fa-bolt"></i>

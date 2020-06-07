@@ -13,8 +13,8 @@
         "production": "cross-env NODE_ENV=production node_modules/webpack/bin/webpack.js --no-progress --hide-modules"
     },
     "devDependencies": {
-        "@babel/core": "^7.9.6",
-        "@babel/preset-env": "^7.9.6",
+        "@babel/core": "^7.10.2",
+        "@babel/preset-env": "^7.10.2",
         "@fortawesome/fontawesome-free": "^5.13.0",
         "axios": "^0.18",
         "babel-loader": "^8.1.0",
@@ -30,9 +30,8 @@
         "sass-loader": "^7.2.0",
         "vue": "^2.6.11",
         "vue-axios": "^2.1.5",
-        "vue-browser-geolocation": "^1.8.0",
         "vue-loader": "^15.9.2",
-        "vue-router": "^3.2.0",
+        "vue-router": "^3.3.2",
         "vue-sse": "^1.0.2",
         "vue-style-loader": "^4.1.2",
         "vue-template-compiler": "^2.6.11",

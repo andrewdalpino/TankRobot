@@ -20,11 +20,6 @@
                     throttle: 0.0,
                     battery_voltage: 0.0,
                     temperature: 0.0,
-                    position: {
-                        lat: undefined,
-                        lon: undefined,
-                    },
-                    num_satellites: 0,
                 },
             };
         },
@@ -41,16 +36,14 @@
                 sse.subscribe('status-update', (message, event) => {
                     this.tank.battery_voltage = message.battery_voltage;
                     this.tank.temperature = message.temperature;
-                    this.tank.num_satellites = message.num_satellites;
-                });
-
-                sse.subscribe('position-update', (message, event) => {
-                    this.tank.position.lat = message.lat;
-                    this.tank.position.lon = message.lon;
                 });
 
                 sse.subscribe('rollover-detected', (message, event) => {
                     bus.$emit('rollover-detected');
+                });
+
+                sse.subscribe('battery-undervoltage', (message, event) => {
+                    bus.$emit('battery-undervoltage');
                 });
             });
 
