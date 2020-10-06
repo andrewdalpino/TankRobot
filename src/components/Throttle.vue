@@ -3,7 +3,7 @@
         <h3 class="label">Throttle</h3>
         <div class="field">
             <div class="control has-text-centered">
-                <input id="throttle" class="slider is-fullwidth is-large is-link" type="range" min="500" max="1000" step="1" orient="vertical" v-model="throttle" @change="setThrottle()">
+                <input id="throttle" class="slider is-fullwidth is-large is-link" type="range" min="0" max="100" step="1" orient="vertical" v-model="throttle" @change="setThrottle()" />
             </div>
         </div>
     </div>
@@ -36,8 +36,6 @@
                     bus.$emit('communication-error', {
                         error,
                     });
-
-                    this.throttle = this.tank.throttle;
                 });
             },
         },
