@@ -16,7 +16,7 @@
         "@babel/core": "^7.10.2",
         "@babel/preset-env": "^7.10.2",
         "@fortawesome/fontawesome-free": "^5.13.0",
-        "axios": "^0.18",
+        "axios": "^0.21",
         "babel-loader": "^8.1.0",
         "bulma": "^0.7.5",
         "bulma-slider": "^2.0.0",
