@@ -1070,7 +1070,7 @@ void updateBattery() {
   if (_battery_voltage > 0 && _battery_voltage < MIN_VOLTAGE) {
     stop();
     
-    beep(1);
+    beep(4);
 
     if (malfunction_emitter.count() > 0) {
       StaticJsonDocument<64> doc;
@@ -1154,7 +1154,7 @@ float calculateYawDelta(float current, float target) {
 }
 
 /**
- * Generate a random weighted index.
+ * Samples a random weighted index.
  */
 uint8_t randomWeightedIndex(uint16_t weights[], uint8_t n) {
   unsigned long sigma = 0.0;
