@@ -1,2 +1,2 @@
 # Tank Robot
-An autonomous tank robot controlled by a NodeMCU.
+A curious little tank robot that loves to explore.

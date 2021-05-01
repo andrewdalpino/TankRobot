@@ -1,4 +1,7 @@
 /node_modules
 npm-debug.log
-.vscode
-.vs
+Thumbs.db
+.DS_Store
+/.idea
+/.vscode
+/.vs

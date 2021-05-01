@@ -4,7 +4,7 @@
 #include <ArduinoJson.h>
 #include <AsyncJson.h>
 #include <VL53L1X.h>
-#include <MPU6050_6Axis_MotionApps20.h>
+#include <MPU6050_6Axis_MotionApps_V6_12.h>
 #include <Ticker.h>
 #include <Wire.h>
 #include <FS.h>
@@ -13,15 +13,19 @@
 
 #define AP_SSID "TankRobot"
 #define AP_PASSWORD "KeepSummerSafe"
-#define AP_CHANNEL 11
+#define AP_CHANNEL 1
 #define AP_MAX_CONNECTIONS 2
 #define AP_HIDDEN 0
 
 #define HTTP_PORT 80
-#define SERVER_EVENTS_URI "/events"
+
+#define HTTP_OK 200
+#define HTTP_NOT_FOUND 404
+#define HTTP_UNPROCESSABLE_ENTITY 422
 
 #define BATTERY_PIN A0
 #define BATTERY_SAMPLE_RATE 3000
+#define VOLTMETER_RESOLUTION 1024.0
 #define MIN_VOLTAGE 6.0
 #define MAX_VOLTAGE 8.4
 
@@ -29,116 +33,140 @@
 #define MOTOR_A_THROTTLE_PIN 5
 #define MOTOR_B_DIRECTION_PIN 2
 #define MOTOR_B_THROTTLE_PIN 4
-#define MOTOR_HALL_PIN 13
 #define MIN_THROTTLE 500
 #define MAX_THROTTLE 1000
-#define MOVER_SAMPLE_RATE 50
-#define MOVER_THRESHOLD 20
-#define MOVER_P_GAIN 0.33
-#define MOVER_I_GAIN 0.33
-#define MOVER_D_GAIN 0.33
-#define DISTANCE_PER_ROTATION 170.0
-#define GEAR_RATIO 1.0/75.0
-
-#define I2C_SDA_PIN 12
-#define I2C_SCL_PIN 14
-#define I2C_CLOCK 400000
-
-#define MPU_ADDRESS 0x68
-#define MPU_INTERRUPT_PIN 10
-#define GYRO_CALIBRATION_LOOPS 8
-#define ACCEL_CALIBRATION_LOOPS 8
-#define LOW_PASS_FILTER_MODE 3
-#define TEMPERATURE_SAMPLE_RATE 3000
-#define TEMPERATURE_SENSITIVITY 340.0
-#define TEMPERATURE_CONSTANT 36.53
-#define ROTATOR_SAMPLE_RATE 50
-#define ROTATOR_P_GAIN 0.33
-#define ROTATOR_I_GAIN 0.33
-#define ROTATOR_D_GAIN 0.33
-#define ROTATOR_THRESHOLD 2.0 * DEG_TO_RAD
-#define STABILIZER_SAMPLE_RATE 100
-#define STABILIZER_P_GAIN 1.2
-#define ROLLOVER_SAMPLE_RATE 1000
-#define ROLLOVER_THRESHOLD HALF_PI
-
-#define LIDAR_ADDRESS 0x52
-#define LIDAR_TIMEOUT 500
-#define LIDAR_SENSOR_OFFSET 10
-#define LIDAR_TIMING_BUDGET 100000
-#define LIDAR_SAMPLE_RATE 100
-#define SCAN_SAMPLE_RATE 200
-#define SCAN_ANGLE M_PI
-#define NUM_SCANS 5
-#define COLLISION_SAMPLE_RATE LIDAR_SAMPLE_RATE
-#define COLLISION_THRESHOLD 300
-
-#define BEEPER_PIN 15
-#define BEEP_DURATION 500
-#define BEEP_DELAY 750
-
-#define EXPLORE_SAMPLE_RATE 250
-#define STATUS_SAMPLE_RATE 3000
 
 #define FORWARD 1
 #define REVERSE 0
 #define LEFT 2
 #define RIGHT 3
 
-#define HTTP_OK 200
-#define HTTP_NOT_FOUND 404
-#define HTTP_UNPROCESSABLE_ENTITY 422
+#define I2C_SDA_PIN D5
+#define I2C_SCL_PIN D6
+#define I2C_CLOCK 400000
+
+#define MPU_ADDRESS 0x68
+#define MPU_INTERRUPT_PIN 10
+#define MPU_MAX_FIFO_COUNT 1024
+#define GYRO_CALIBRATION_LOOPS 8
+#define ACCEL_CALIBRATION_LOOPS 8
+#define LOW_PASS_FILTER_MODE 3
+#define ACCEL_LSB_PER_G 16384.0
+#define VELOCITY_SAMPLE_RATE 50
+#define TEMPERATURE_SAMPLE_RATE 1500
+#define TEMPERATURE_SENSITIVITY 340.0
+#define TEMPERATURE_CONSTANT 36.53
+
+#define LIDAR_ADDRESS 0x52
+#define LIDAR_TIMEOUT 500
+#define LIDAR_SENSOR_OFFSET -10
+#define LIDAR_TIMING_BUDGET 100000
+#define LIDAR_SAMPLE_RATE 100
+#define LIDAR_MAX_RANGE 4000
+
+#define LIDAR_RANGE_VALID 0
+#define LIDAR_NOISY_SIGNAL 1
+#define LIDAR_SIGNAL_FAILURE 2
+#define LIDAR_PHASE_OUT_OF_BOUNDS 4
+
+#define MOVER_SAMPLE_RATE LIDAR_SAMPLE_RATE
+
+#define ROTATOR_SAMPLE_RATE 50
+#define ROTATOR_THRESHOLD 2.0 * DEG_TO_RAD
+#define ROTATOR_P_GAIN 4.0
+#define ROTATOR_I_GAIN 0.5
+#define ROTATOR_D_GAIN 1.2
+
+#define STABILIZER_SAMPLE_RATE 100
+#define STABILIZER_P_GAIN 0.6
+#define STABILIZER_I_GAIN 0.8
+#define STABILIZER_D_GAIN 0.3
+
+#define SCAN_SAMPLE_RATE 250
+#define SCAN_WINDOW M_PI
+#define NUM_SCANS 5
+
+#define COLLISION_SAMPLE_RATE LIDAR_SAMPLE_RATE
+#define COLLISION_THRESHOLD 300
+
+#define ROLLOVER_SAMPLE_RATE 500
+#define ROLLOVER_THRESHOLD HALF_PI
+
+#define BEEPER_PIN D7
+#define BEEP_DURATION 150
+#define BEEP_DELAY 50
+
+#define EXPLORE_SAMPLE_RATE 500
+#define STATUS_SAMPLE_RATE 3000
 
 AsyncWebServer server(HTTP_PORT);
-
-AsyncEventSource events(SERVER_EVENTS_URI);
+AsyncEventSource sensor_emitter("/robot/sensors/events");
+AsyncEventSource malfunction_emitter("/robot/malfunctions/events");
 
 float _battery_voltage;
+
 Ticker battery_timer;
 
-int _direction = FORWARD;
-unsigned int _throttle = 750;
-unsigned int _motor_ticks, _target_ticks;
-float _mover_previous_delta, _mover_delta_integral;
+uint8_t _direction = FORWARD;
+int _throttle = 750;
 bool _stopped = true;
-
-Ticker move_timer;
-
-void ICACHE_RAM_ATTR motorTick();
 
 MPU6050 mpu(MPU_ADDRESS);
 
 Quaternion _q;
 VectorFloat _gravity;
-float _orientation[3], _yaw_lock, _temperature;
-float _rotator_previous_delta, _rotator_delta_integral;
-volatile bool _dmp_ready = false;
+VectorInt16 _aa, _aa_real;
+VectorFloat _acceleration, _velocity;
+VectorFloat _prev_acceleration;
+float _yaw, _pitch, _roll;
+float _yaw_lock, _temperature;
 uint8_t _dmp_fifo_buffer[64];
 uint16_t _dmp_packet_size;
-
 void ICACHE_RAM_ATTR dmpDataReady();
+volatile bool _dmp_ready = false;
 
-Ticker rotator_timer, stabilizer_timer, rollover_timer, temperature_timer;
+Ticker temperature_timer, rollover_timer;
+Ticker velocity_timer;
+
+bool _moving = false;
+
+Ticker move_timer;
+
+float _rotator_prev_delta, _rotator_delta_integral;
+bool _rotating = false;
+
+Ticker rotator_timer;
+
+float _stabilizer_prev_delta, _stabilizer_delta_integral;
+
+Ticker stabilizer_timer;
 
 VL53L1X lidar;
 
 float _scan_angles[NUM_SCANS];
-float _distances_to_object[NUM_SCANS];
-unsigned int _scan_count;
+uint16_t _distances_to_object[NUM_SCANS];
+bool _scanning = false;
+uint8_t _scan_count;
 
 Ticker scan_timer, collision_timer;
 
-Ticker multibeep_timer, beep_timer;
+unsigned int _explore_step;
+bool _exploring = false;
 
 Ticker explore_timer;
 
-Ticker status_timer;
+Ticker beep_timer;
 
 /**
  * Bootstrap routine to setup the robot.
  */
-void setup() {  
+void setup() {    
   setupSerial();
+
+  setupBeeper();
+
+  setupCPU();
+  setupROM();
   
   setupSPIFFS();
 
@@ -153,11 +181,9 @@ void setup() {
   setupMPU();
   setupLidar();
 
-  initRandom();
+  setupRandom();
 
-  setupBeeper();
-
-  setupBroadcasting();
+  Serial.println("Ready");
 }
 
 /**
@@ -165,6 +191,49 @@ void setup() {
  */
 void setupSerial() {
   Serial.begin(SERIAL_BAUD);
+
+  Serial.println("Serial port enabled");
+}
+
+/**
+ * Setup the beeper.
+ */
+void setupBeeper() {
+  pinMode(BEEPER_PIN, OUTPUT);
+
+  Serial.println("Beeper enabled");
+}
+
+/**
+ * Set up the central processing unit.
+ */
+void setupCPU() {
+  Serial.print("CPU clock: ");
+  Serial.print(ESP.getCpuFreqMHz());
+  Serial.println("mhz");
+}
+
+/**
+ * Setup the flash ROM.
+ */
+void setupROM() {   
+  if (!ESP.checkFlashCRC()) {
+    Serial.println("Flash ROM CRC mismatch");
+
+    panicNow();
+  }
+
+  Serial.print("ROM size: ");
+  Serial.print(ESP.getFlashChipRealSize() / 1024);
+  Serial.println("kb");
+
+  Serial.print("Free space: ");
+  Serial.print(ESP.getFreeSketchSpace() / 1024.0);
+  Serial.println("kb");
+
+  Serial.print("ROM speed: ");
+  Serial.print(ESP.getFlashChipSpeed() / 1000000);
+  Serial.println("mhz");
 }
 
 /**
@@ -172,9 +241,11 @@ void setupSerial() {
  */
 void setupSPIFFS() {
   if (SPIFFS.begin()) {
-    Serial.println("SPIFFS mounted successfully");
+    Serial.println("SPIFFS mounted");
   } else {
     Serial.println("Failed to mount SPIFFS");
+
+    panicNow();
   }
 }
 
@@ -202,20 +273,34 @@ void setupAccessPoint() {
  * Set up the HTTP server.
  */
 void setupHttpServer() {
-  server.serveStatic("/", SPIFFS, "/").setDefaultFile("index.html");
-  server.serveStatic("/autonomous", SPIFFS, "/index.html");
-  server.serveStatic("/settings", SPIFFS, "/index.html");
-  
-  server.on("/api/status", HTTP_GET, handleStatus);
-  server.on("/api/movement/forward", HTTP_PUT, handleForward);
-  server.on("/api/movement/left", HTTP_PUT, handleLeft);
-  server.on("/api/movement/right", HTTP_PUT, handleRight);
-  server.on("/api/movement/reverse", HTTP_PUT, handleReverse);
-  server.on("/api/movement/stop", HTTP_PUT, handleStop);
-  server.on("/api/beeper", HTTP_PUT, handleBeep);
+  server.serveStatic("/ui", SPIFFS, "/app.html");
+  server.serveStatic("/ui/control", SPIFFS, "/app.html");
+  server.serveStatic("/manifest.json", SPIFFS, "/manifest.json");
+  server.serveStatic("/app.js", SPIFFS, "/app.js");
+  server.serveStatic("/sw.js", SPIFFS, "/sw.js");
+  server.serveStatic("/app.css", SPIFFS, "/app.css");
+  server.serveStatic("/images/app-icon-small.png", SPIFFS, "/images/app-icon-small.png");
+  server.serveStatic("/images/app-icon-large.png", SPIFFS, "/images/app-icon-large.png");
+  server.serveStatic("/fonts/Roboto-300.woff2", SPIFFS, "/fonts/Roboto-300.woff2");
+  server.serveStatic("/fonts/Roboto-300.woff", SPIFFS, "/fonts/Roboto-300.woff");
+  server.serveStatic("/fonts/Roboto-regular.woff2", SPIFFS, "/fonts/Roboto-regular.woff2");
+  server.serveStatic("/fonts/Roboto-regular.woff", SPIFFS, "/fonts/Roboto-regular.woff");
+  server.serveStatic("/fonts/Roboto-500.woff2", SPIFFS, "/fonts/Roboto-500.woff2");
+  server.serveStatic("/fonts/Roboto-500.woff", SPIFFS, "/fonts/Roboto-500.woff");
+  server.serveStatic("/fonts/fa-solid-900.woff2", SPIFFS, "/fonts/fa-solid-900.woff2");
+  server.serveStatic("/fonts/fa-solid-900.woff", SPIFFS, "/fonts/fa-solid-900.woff");
+  server.serveStatic("/sounds/plucky.ogg", SPIFFS, "/sounds/plucky.ogg");
 
-  server.addHandler(new AsyncCallbackJsonWebHandler("/api/throttle", handleSetThrottle));
-  server.addHandler(&events);
+  server.addHandler(new AsyncCallbackJsonWebHandler("/robot/motors/direction", handleChangeDirection));
+  server.addHandler(new AsyncCallbackJsonWebHandler("/robot/motors/throttle", handleSetThrottle));
+  server.addHandler(new AsyncCallbackJsonWebHandler("/robot/rotator/left", handleRotateLeft));
+  server.addHandler(new AsyncCallbackJsonWebHandler("/robot/rotator/right", handleRotateRight));
+
+  server.on("/robot", HTTP_GET, handleGetRobot);
+  server.on("/robot/motors", HTTP_DELETE, handleStop);
+  server.on("/robot/features/beeper", HTTP_PUT, handleBeep);
+  server.on("/robot/features/autonomy", HTTP_PUT, handleExplore);
+  server.on("/robot/features/autonomy", HTTP_DELETE, handleStop);
 
   server.onNotFound(handleNotFound);
 
@@ -246,8 +331,6 @@ void setupMotors() {
   pinMode(MOTOR_B_DIRECTION_PIN, OUTPUT);
   pinMode(MOTOR_B_THROTTLE_PIN, OUTPUT);
 
-  pinMode(MOTOR_HALL_PIN, INPUT);
-
   stop();
 
   Serial.println("Motors enabled");
@@ -273,15 +356,17 @@ void setupMPU() {
     Serial.println("MPU initialized");
   } else {
     Serial.println("MPU failure");
+
+    panicNow();
   }
 
   Serial.print("Calibrating ");
 
   mpu.CalibrateGyro(GYRO_CALIBRATION_LOOPS);
   mpu.CalibrateAccel(ACCEL_CALIBRATION_LOOPS);
-  
-  mpu.PrintActiveOffsets();
 
+  mpu.setFullScaleGyroRange(MPU6050_GYRO_FS_250);
+  mpu.setFullScaleAccelRange(MPU6050_ACCEL_FS_2);
   mpu.setDLPFMode(LOW_PASS_FILTER_MODE);
   mpu.setSleepEnabled(false);
 
@@ -295,9 +380,11 @@ void setupMPU() {
 
   attachInterrupt(digitalPinToInterrupt(MPU_INTERRUPT_PIN), dmpDataReady, RISING);
 
+  Serial.println("DMP initialized");
+
   temperature_timer.attach_ms(TEMPERATURE_SAMPLE_RATE, updateTemperature);
 
-  Serial.println("DMP initialized");
+  velocity_timer.attach_ms(VELOCITY_SAMPLE_RATE, updateVelocity);
 }
 
 /**
@@ -310,6 +397,8 @@ void setupLidar() {
     Serial.println("Lidar initialized");
   } else {
     Serial.println("Lidar failure");
+
+    panicNow();
   }
 
   lidar.setDistanceMode(VL53L1X::Long);
@@ -318,72 +407,74 @@ void setupLidar() {
 }
 
 /**
- * Initialize the random number generator.
+ * Set up the random number generator.
  */
-void initRandom() {
+void setupRandom() {
   randomSeed(analogRead(BATTERY_PIN));
-
-  Serial.println("Initialized random number generator");
-}
-
-/**
- * Setup the beeper.
- */
-void setupBeeper() {
-  pinMode(BEEPER_PIN, OUTPUT);
-
-  Serial.println("Beeper online");
-}
-
-/**
- * Set up event broacasting.
- */
-void setupBroadcasting() {
-  status_timer.attach_ms(STATUS_SAMPLE_RATE, broadcastStatus);
-
-  Serial.println("Broadcasting enabled");
+  
+  Serial.println("Seeded random number generator");
 }
 
 /**
  * Main event loop.
  */
 void loop() {    
-  if (lidar.dataReady()) {
-    lidar.read(false);
-  }
-
-  yield();
-
   if (_dmp_ready) {
     uint8_t mpu_int_status = mpu.getIntStatus();
     uint16_t fifo_count = mpu.getFIFOCount();
 
     if (fifo_count % _dmp_packet_size != 0) {
       mpu.resetFIFO();
-    } else if (mpu_int_status & 0x10 || fifo_count >= 1024) {
+    } else if (mpu_int_status & 0x10 || fifo_count >= MPU_MAX_FIFO_COUNT) {
       mpu.resetFIFO();
     } else if (mpu_int_status & 0x02) {
       readDMPBuffer(fifo_count);
 
       updateOrientation();
+
+      updateAcceleration();
     }
   }
 
   yield();
-  
-  handleSerial();
+
+  Serial.print("Velocity X: ");
+  Serial.print(_velocity.x);
+  Serial.print("\t");
+  Serial.print("Veclocity Y: ");
+  Serial.print(_velocity.y);
+  Serial.print("\t");
+  Serial.print("Veclocity Z: ");
+  Serial.println(_velocity.z);
+
+  if (lidar.dataReady()) {
+    lidar.read(false);
+  }
 }
 
 /**
- * Handle the robot status request.
+ * Handle a get robot request.
  */
-int handleStatus(AsyncWebServerRequest *request) {
+int handleGetRobot(AsyncWebServerRequest *request) {
   StaticJsonDocument<512> doc;
   char buffer[512];
 
-  doc["throttle"] = _throttle;
-  doc["battery_voltage"] = _battery_voltage;
-  doc["temperature"] = _temperature;
+  JsonObject robot = doc.createNestedObject("robot");
+
+  JsonObject motors = robot.createNestedObject("motors");
+
+  motors["direction"] = _direction;
+  motors["throttle"] = _throttle / MAX_THROTTLE;
+  motors["stopped"] = _stopped;
+
+  JsonObject sensors = robot.createNestedObject("sensors");
+
+  sensors["voltage"] = _battery_voltage;
+  sensors["temperature"] = _temperature;
+
+  JsonObject features = robot.createNestedObject("features");
+
+  features["autonomy"] = _exploring;
   
   serializeJson(doc, buffer);
 
@@ -391,48 +482,40 @@ int handleStatus(AsyncWebServerRequest *request) {
 }
 
 /**
- * Handle the forward direction request.
+ * Handle a change direction request.
  */
-void handleForward(AsyncWebServerRequest *request) {
-  forward();
+void handleChangeDirection(AsyncWebServerRequest *request, JsonVariant &json) {
+  const JsonObject& doc = json.as<JsonObject>();
 
-  request->send(HTTP_OK);
-}
+  if (!doc.containsKey("direction")) {
+    request->send(HTTP_UNPROCESSABLE_ENTITY);
 
-/**
- * Handle the left direction request.
- */
-void handleLeft(AsyncWebServerRequest *request) {
-  left();
+    return;
+  }
 
-  request->send(HTTP_OK);
-}
+  uint8_t direction = doc["direction"];
 
-/**
- * Handle the right direction request.
- */
-void handleRight(AsyncWebServerRequest *request) {
-  right();
+  switch (direction) {
+    case FORWARD:
+      forward();
+ 
+      break;
 
-  request->send(HTTP_OK);
-}
+     case LEFT:
+      left();
+      
+      break;
 
-/**
- * Handle the reverse direction request.
- * 
- * @param AsyncWebServerRequest* request
- */
-void handleReverse(AsyncWebServerRequest *request) {
-  reverse();
+    case RIGHT:
+      right();
+      
+      break;
 
-  request->send(HTTP_OK);
-}
-
-/**
- * Handle the stop movement request.
- */
-void handleExplore(AsyncWebServerRequest *request) {
-  explore();
+    case REVERSE:
+      reverse();
+      
+      break;
+  }
 
   request->send(HTTP_OK);
 }
@@ -447,16 +530,25 @@ void handleStop(AsyncWebServerRequest *request) {
 }
 
 /**
- * Handle a beep request.
+ * Handle the stop movement request.
  */
-void handleBeep(AsyncWebServerRequest *request) {
-  beep();
+void handleExplore(AsyncWebServerRequest *request) {
+  explore();
 
   request->send(HTTP_OK);
 }
 
 /**
- * Handle the set throttle request.
+ * Handle a beep request.
+ */
+void handleBeep(AsyncWebServerRequest *request) {
+  beep(2);
+
+  request->send(HTTP_OK);
+}
+
+/**
+ * Handle a set throttle position request.
  */
 void handleSetThrottle(AsyncWebServerRequest *request, JsonVariant &json) {
   const JsonObject& doc = json.as<JsonObject>();
@@ -467,13 +559,15 @@ void handleSetThrottle(AsyncWebServerRequest *request, JsonVariant &json) {
     return;
   }
 
-  setThrottle((int) doc["throttle"]);
+  int throttle = (int) doc["throttle"];
+
+  setThrottle(throttle);
 
   request->send(HTTP_OK);
 }
 
 /**
- * Catch all web route to return a 404 response if a route not found.
+ * Catch all route responds with 404.
  */
 int handleNotFound(AsyncWebServerRequest *request) {
   request->send(HTTP_NOT_FOUND);
@@ -483,74 +577,40 @@ int handleNotFound(AsyncWebServerRequest *request) {
  * Move forward.
  */
 void forward() {
-  _direction = FORWARD;
-  _yaw_lock = _orientation[0];
-
-  stabilizer_timer.attach_ms(STABILIZER_SAMPLE_RATE, stabilizer);
-  collision_timer.attach_ms(COLLISION_SAMPLE_RATE, detectCollision);
-
   digitalWrite(MOTOR_A_DIRECTION_PIN, FORWARD);
   digitalWrite(MOTOR_B_DIRECTION_PIN, FORWARD);
+  
+  _direction = FORWARD;
+  _yaw_lock = _yaw;
+  _stabilizer_delta_integral = 0.0;
+  _stabilizer_prev_delta = 0.0;
+
+  stabilizer_timer.attach_ms(STABILIZER_SAMPLE_RATE, stabilize);
+  collision_timer.attach_ms(COLLISION_SAMPLE_RATE, detectCollision);
 
   go();
-}
-
-/**
- * Rotate the vehicle x radians to the left.
- */
-void rotateLeft(float radians = HALF_PI) { 
-  _direction = LEFT;
-  _stopped = false;
-
-  _yaw_lock = calculateTargetAngle(_orientation[0], -radians);
-
-  _rotator_delta_integral = 0.0;
-  _rotator_previous_delta = 0.0;
-
-  digitalWrite(MOTOR_A_DIRECTION_PIN, FORWARD);
-  digitalWrite(MOTOR_B_DIRECTION_PIN, REVERSE);
-
-  rotator_timer.attach_ms(ROTATOR_SAMPLE_RATE, rotator);
 }
 
 /**
  * Turn in the left direction.
  */
-void left() {
-  _direction = LEFT;
-
+void left() {  
   digitalWrite(MOTOR_A_DIRECTION_PIN, FORWARD);
   digitalWrite(MOTOR_B_DIRECTION_PIN, REVERSE);
+  
+  _direction = LEFT;
 
   go();
-}
-
-/**
- * Rotate the vehicle by x radians to the right.
- */
-void rotateRight(float radians = HALF_PI) {
-  _direction = RIGHT;
-  _stopped = false;
-  
-  _yaw_lock = calculateTargetAngle(_orientation[0], radians);
-
-  _rotator_delta_integral = 0.0;
-  _rotator_previous_delta = 0.0;
-
-  digitalWrite(MOTOR_A_DIRECTION_PIN, REVERSE);
-  digitalWrite(MOTOR_B_DIRECTION_PIN, FORWARD);
-
-  rotator_timer.attach_ms(ROTATOR_SAMPLE_RATE, rotator);
 }
 
 /**
  * Turn in the right direction.
  */
 void right() {
-  _direction = RIGHT;
-
   digitalWrite(MOTOR_A_DIRECTION_PIN, REVERSE);
   digitalWrite(MOTOR_B_DIRECTION_PIN, FORWARD);
+  
+  _direction = RIGHT;
 
   go();
 }
@@ -559,13 +619,15 @@ void right() {
  * Move in reverse.
  */
 void reverse() {
-  _direction = REVERSE;
-  _yaw_lock = _orientation[0];
-
-  stabilizer_timer.attach_ms(STABILIZER_SAMPLE_RATE, stabilizer);
-
   digitalWrite(MOTOR_A_DIRECTION_PIN, REVERSE);
   digitalWrite(MOTOR_B_DIRECTION_PIN, REVERSE);
+  
+  _direction = REVERSE;
+  _yaw_lock = _yaw;
+  _stabilizer_delta_integral = 0.0;
+  _stabilizer_prev_delta = 0.0;
+
+  stabilizer_timer.attach_ms(STABILIZER_SAMPLE_RATE, stabilize);
 
   go();
 }
@@ -574,66 +636,40 @@ void reverse() {
  * Engage the motors.
  */
 void go() {
+  analogWrite(MOTOR_A_THROTTLE_PIN, _throttle);
+  analogWrite(MOTOR_B_THROTTLE_PIN, _throttle);
+    
   _stopped = false;
 
   rollover_timer.attach_ms(ROLLOVER_SAMPLE_RATE, detectRollover);
-
-  analogWrite(MOTOR_A_THROTTLE_PIN, _throttle);
-  analogWrite(MOTOR_B_THROTTLE_PIN, _throttle);
 }
 
 /**
  * Disengage the motors and related timers.
  */
 void stop() {
+  brake();
+
+  move_timer.detach();
+  stabilizer_timer.detach();
+  rotator_timer.detach();
+  collision_timer.detach();
+  rollover_timer.detach();
+  explore_timer.detach();
+    
+  _stopped = true;
+}
+
+/**
+ * Apply the brake to the motors.
+ */
+void brake() {
   analogWrite(MOTOR_A_THROTTLE_PIN, 0);
   analogWrite(MOTOR_B_THROTTLE_PIN, 0);
 
-  _stopped = true;
-
-  move_timer.detach();
-  rotator_timer.detach();
-  stabilizer_timer.detach();
-  collision_timer.detach();
-  rollover_timer.detach();}
-
-/**
- * Kick off the explore loop.
- */
-void explore() {
-  stop();
-  
-  explore_timer.attach_ms(EXPLORE_SAMPLE_RATE, exploreLoop);
-}
-
-/**
- * Scan the environment for objects.
- */
-void scan() {
-  stop();
-  
-  rotateRight(SCAN_ANGLE / 2.0);
-
-  _scan_count = 0;
-
-  scan_timer.attach_ms(SCAN_SAMPLE_RATE, scanLoop);
-}
-
-/**
- * Move forward by x millimeters distance.
- */
-void move(float distance) {
-  stop();
-
-  _motor_ticks = 0;
-  _target_ticks = calculateTargetTicks(distance);
-
-  _mover_delta_integral = 0.0;
-  _mover_previous_delta = 0.0;
-
-  attachInterrupt(digitalPinToInterrupt(MOTOR_HALL_PIN), motorTick, RISING);
-
-  move_timer.attach_ms(MOVER_SAMPLE_RATE, mover);
+  _velocity.x = 0.0;
+  _velocity.y = 0.0;
+  _velocity.z = 0.0;
 }
 
 /**
@@ -651,134 +687,86 @@ void setThrottle(int throttle) {
 }
 
 /**
- * Motor hall sensor callback.
+ * Rotate the vehicle x radians to the left.
  */
-void motorTick() {
-  _motor_ticks++;
-}
-
-/**
- * MPU interrupt callback to signal DMP data is ready in the buffer.
- */
-void dmpDataReady() {
-  _dmp_ready = true;
-}
-
-/**
- * Read the DMP FIFO buffer into memory.
- */
-void readDMPBuffer(int fifo_count) {
-  while (fifo_count >= _dmp_packet_size) {
-    mpu.getFIFOBytes(_dmp_fifo_buffer, _dmp_packet_size);
-
-    fifo_count -= _dmp_packet_size;
-  }
-
-  _dmp_ready = false;
-}
-
-/**
- * Compute current yaw, pitch, and roll using the onboard Digital Motion Processeor.
- */
-void updateOrientation() {
-  mpu.dmpGetQuaternion(&_q, _dmp_fifo_buffer);
-
-  mpu.dmpGetGravity(&_gravity, &_q);
-
-  _orientation[0] = atan2(2.0 * -_q.x * _q.y - 2.0 * _q.w * -_q.z, 2.0 * pow(_q.w, 2) + 2.0 * pow(_q.x, 2) - 1.0);
-  _orientation[1] = atan2(-_gravity.x, sqrt(pow(_gravity.y, 2) + pow(_gravity.z, 2)));
-  _orientation[2] = atan2(_gravity.y, -_gravity.z);
-}
-
-/**
- * Update the temperature.
- */
-void updateTemperature() {
-  long raw = mpu.getTemperature();
+void rotateLeft(float radians = HALF_PI) { 
+  digitalWrite(MOTOR_A_DIRECTION_PIN, FORWARD);
+  digitalWrite(MOTOR_B_DIRECTION_PIN, REVERSE);
   
-  _temperature = raw / TEMPERATURE_SENSITIVITY + TEMPERATURE_CONSTANT;
+  _direction = LEFT;
+  _rotating = true;
+
+  _yaw_lock = calculateTargetAngle(_yaw, -radians);
+
+  _rotator_delta_integral = 0.0;
+  _rotator_prev_delta = 0.0;
+
+  rotator_timer.attach_ms(ROTATOR_SAMPLE_RATE, rotator);
 }
 
 /**
- * Routine to explore the environment.
+ * Rotate the vehicle by x radians to the right.
  */
-void exploreLoop() {
-  //
+void rotateRight(float radians = HALF_PI) {
+  digitalWrite(MOTOR_A_DIRECTION_PIN, REVERSE);
+  digitalWrite(MOTOR_B_DIRECTION_PIN, FORWARD);
+   
+  _direction = RIGHT;
+  _rotating = true;
+  
+  _yaw_lock = calculateTargetAngle(_yaw, radians);
+
+  _rotator_delta_integral = 0.0;
+  _rotator_prev_delta = 0.0;
+
+  rotator_timer.attach_ms(ROTATOR_SAMPLE_RATE, rotator);
 }
 
 /**
- * Scan the environment for objects.
+ * Rotate left.
  */
-void scanLoop() {
-  if (_stopped) {
-    _scan_angles[_scan_count] = _orientation[0];
-    _distances_to_object[_scan_count] = lidar.ranging_data.range_mm + LIDAR_SENSOR_OFFSET;
-    
-    _scan_count++;
-    
-    if (_scan_count < NUM_SCANS) {
-      rotateLeft(SCAN_ANGLE / (NUM_SCANS - 1));
-    } else {
-      scan_timer.detach();
-    }
-  }
-}
+void handleRotateLeft(AsyncWebServerRequest *request, JsonVariant &json) {
+  const JsonObject& doc = json.as<JsonObject>();
 
-/**
- * Control loop to actuate the motors a specific number of rotations.
- */
-void mover() {
-  float delta = _target_ticks - _motor_ticks;
-
-  _mover_delta_integral += delta;
+  if (doc.containsKey("degrees")) {
+    float degrees = (float) doc["degrees"];
       
-  float derivative = delta - _mover_previous_delta;
-
-  float theta = MOVER_P_GAIN * delta
-    + MOVER_I_GAIN * _mover_delta_integral
-    + MOVER_D_GAIN * derivative;
-
-  float alpha = min(fabs(theta) / _target_ticks, 1.0);
-
-  unsigned int mover_throttle = (int) round(alpha * _throttle);
-
-  if (theta > 0.0) {
-    if (_direction != FORWARD) {
-      digitalWrite(MOTOR_A_DIRECTION_PIN, FORWARD);
-      digitalWrite(MOTOR_B_DIRECTION_PIN, FORWARD);
-
-      _direction = FORWARD;
-    }
+    rotateLeft(degrees * DEG_TO_RAD);
   } else {
-    if (_direction != REVERSE) {
-      digitalWrite(MOTOR_A_DIRECTION_PIN, REVERSE);
-      digitalWrite(MOTOR_B_DIRECTION_PIN, REVERSE);
-
-      _direction = REVERSE;
-    }
+    rotateLeft();
   }
 
-  analogWrite(MOTOR_A_THROTTLE_PIN, mover_throttle);
-  analogWrite(MOTOR_B_THROTTLE_PIN, mover_throttle);
-
-  if (fabs(delta) < MOVER_THRESHOLD) {
-    detachInterrupt(digitalPinToInterrupt(MOTOR_HALL_PIN));
-    
-    stop();
-  } else {
-    _rotator_previous_delta = delta;
-  }
+  request->send(HTTP_OK);
 }
 
 /**
- * Routine to rotate the vehicle by actuating the motors.
+ * Handle the stop movement request.
+ */
+void handleRotateRight(AsyncWebServerRequest *request, JsonVariant &json) {
+  const JsonObject& doc = json.as<JsonObject>();
+
+  if (doc.containsKey("degrees")) {
+    float degrees = (float) doc["degrees"];
+      
+    rotateRight(degrees * DEG_TO_RAD);
+  } else {
+    rotateRight();
+  }
+  
+  request->send(HTTP_OK);
+}
+
+/**
+ * Control loop to rotate the vehicle by actuating the motors.
  */
 void rotator() {
-  float delta = calculateYawDelta(_orientation[0], _yaw_lock);
+  float delta = calculateYawDelta(_yaw, _yaw_lock);
 
-  _rotator_delta_integral += delta;
+  _rotator_delta_integral += 0.5 * (delta + _rotator_prev_delta);
+
+  _rotator_delta_integral = constrain(_rotator_delta_integral, -M_PI, M_PI);
       
-  float derivative = delta - _rotator_previous_delta;
+  float derivative = delta - _rotator_prev_delta;
 
   float theta = ROTATOR_P_GAIN * delta
     + ROTATOR_I_GAIN * _rotator_delta_integral
@@ -808,46 +796,234 @@ void rotator() {
   analogWrite(MOTOR_B_THROTTLE_PIN, rotator_throttle);
 
   if (fabs(delta) < ROTATOR_THRESHOLD) {    
-    stop();
+    brake();
+
+    _rotating = false;
   } else {
-    _rotator_previous_delta = delta;
+    _rotator_prev_delta = delta;
   }
 }
 
 /**
- * Maintain linear movement by applying backoff to the side that is ahead.
+ * Kick off the explore loop.
  */
-void stabilizer() {
-  float delta = calculateYawDelta(_orientation[0], _yaw_lock);
+void explore() {
+  stop();
 
-  float beta = min(STABILIZER_P_GAIN * fabs(delta) / M_PI, 1.0);
+  _explore_step = 0;
+  _exploring = true;
+  
+  explore_timer.attach_ms(EXPLORE_SAMPLE_RATE, exploreLoop);
+}
+
+/**
+ * Control loop to explore the environment.
+ */
+void exploreLoop() {
+  if (!_scanning && !_moving && !_rotating) {
+    if (_explore_step == 0) {
+      scan();
+        
+      _explore_step = 1;
+    } else if (_explore_step == 1) {
+      uint8_t index = randomWeightedIndex(_distances_to_object, NUM_SCANS);
+
+      float delta = calculateYawDelta(_yaw, _scan_angles[index]);
+
+      if (delta < 0.0) {
+        rotateLeft(delta);
+      } else {
+        rotateRight(delta);
+      }
+
+      _explore_step = 2;
+    } else if (_explore_step == 2) {
+      move(3000);
+
+      _explore_step = 0;
+    }
+  }
+}
+
+/**
+ * Move the robot forward.
+ */
+void move(unsigned long duration) {
+  move_timer.attach_ms(duration, stop);
+  
+  _moving = true;
+
+  forward();
+}
+
+/**
+ * Scan the environment.
+ */
+void scan() {
+  rotateRight(0.5 * SCAN_WINDOW);
+    
+  _scan_count = 0;
+  _scanning = true;
+
+  scan_timer.attach_ms(SCAN_SAMPLE_RATE, scanLoop);
+}
+
+/**
+ * Control loop to scan the environment for objects.
+ */
+void scanLoop() {
+  if (!_rotating) {
+    uint16_t distance = 0;
+    
+    switch (lidar.ranging_data.range_status) {
+      case LIDAR_RANGE_VALID:
+        distance = lidar.ranging_data.range_mm;
+        break;
+
+      case LIDAR_NOISY_SIGNAL:
+        distance = 0.5 * lidar.ranging_data.range_mm;
+        break;
+
+      case LIDAR_SIGNAL_FAILURE:
+      case LIDAR_PHASE_OUT_OF_BOUNDS:
+        distance = LIDAR_MAX_RANGE;
+        break;
+    }
+
+    _scan_angles[_scan_count] = _yaw;
+    _distances_to_object[_scan_count] = distance + LIDAR_SENSOR_OFFSET;
+   
+    _scan_count++;
+    
+    if (_scan_count < NUM_SCANS) {
+      rotateLeft(SCAN_WINDOW / (NUM_SCANS - 1));
+    } else {
+      _scanning = false;
+      
+      scan_timer.detach();
+    }
+  }
+}
+
+/**
+ * Stabilize linear movement using orientation feedback from the gyroscope.
+ */
+void stabilize() {
+  float delta = calculateYawDelta(_yaw, _yaw_lock);
+
+  _stabilizer_delta_integral += 0.5 * (delta + _stabilizer_prev_delta);
+
+  _stabilizer_delta_integral = constrain(_stabilizer_delta_integral, -M_PI, M_PI);
+      
+  float derivative = delta - _stabilizer_prev_delta;
+
+  float theta = STABILIZER_P_GAIN * delta
+    + STABILIZER_I_GAIN * _stabilizer_delta_integral
+    + STABILIZER_D_GAIN * derivative;
+
+  float beta = min(fabs(theta) / M_PI, 1.0);
 
   unsigned int backoff_throttle = (int) round((1.0 - beta) * _throttle);
 
-  if (delta > 0.0) {
+  if (delta < 0.0) {
     switch (_direction) {
       case FORWARD:
-        analogWrite(MOTOR_A_THROTTLE_PIN, backoff_throttle);
-            
+        analogWrite(MOTOR_B_THROTTLE_PIN, backoff_throttle);
         break;
     
       case REVERSE:
-        analogWrite(MOTOR_B_THROTTLE_PIN, backoff_throttle);
-            
+        analogWrite(MOTOR_A_THROTTLE_PIN, backoff_throttle); 
         break;
     }
   } else {
     switch (_direction) {
       case FORWARD:
-        analogWrite(MOTOR_B_THROTTLE_PIN, backoff_throttle);
-            
+        analogWrite(MOTOR_A_THROTTLE_PIN, backoff_throttle); 
         break;
     
       case REVERSE:
-        analogWrite(MOTOR_A_THROTTLE_PIN, backoff_throttle);
-            
+        analogWrite(MOTOR_B_THROTTLE_PIN, backoff_throttle);       
         break;
     }
+  }
+}
+
+/**
+ * MPU interrupt callback to signal DMP data is ready in the buffer.
+ */
+void dmpDataReady() {
+  _dmp_ready = true;
+}
+
+/**
+ * Read the DMP FIFO buffer into memory.
+ */
+void readDMPBuffer(int fifo_count) {
+  while (fifo_count >= _dmp_packet_size) {
+    mpu.getFIFOBytes(_dmp_fifo_buffer, _dmp_packet_size);
+
+    fifo_count -= _dmp_packet_size;
+  }
+
+  _dmp_ready = false;
+}
+
+/**
+ * Calculate the current yaw, pitch, and roll using the quatrernion and gravity vector from the onboard Digital Motion Processeor.
+ */
+void updateOrientation() {
+  mpu.dmpGetQuaternion(&_q, _dmp_fifo_buffer);
+        
+  mpu.dmpGetGravity(&_gravity, &_q);
+        
+  _yaw = atan2(2.0 * -_q.x * _q.y - 2.0 * _q.w * -_q.z, 2.0 * pow(_q.w, 2) + 2.0 * pow(_q.x, 2) - 1.0);
+  
+  _pitch = atan2(-_gravity.x, sqrt(pow(_gravity.y, 2) + pow(_gravity.z, 2)));
+  
+  _roll = atan2(_gravity.y, -_gravity.z);
+}
+
+/**
+ * Update the current linear acceleration of the vehicle with gravity vector removed.
+ */
+void updateAcceleration() {
+  mpu.dmpGetAccel(&_aa, _dmp_fifo_buffer);
+
+  mpu.dmpGetLinearAccel(&_aa_real, &_aa, &_gravity);
+
+  _prev_acceleration = _acceleration;
+
+  _acceleration.x = -_aa_real.x / ACCEL_LSB_PER_G;
+  _acceleration.y = _aa_real.y / ACCEL_LSB_PER_G;
+  _acceleration.z = -_aa_real.z / ACCEL_LSB_PER_G;
+}
+
+/**
+ * Update the velocity of the vehicle by inegrating acceleration.
+ */
+void updateVelocity() {
+  _velocity.x += 0.5 * (_acceleration.x + _prev_acceleration.x);
+  _velocity.y += 0.5 * (_acceleration.y + _prev_acceleration.x);
+  _velocity.z += 0.5 * (_acceleration.z + _prev_acceleration.x);
+}
+
+/**
+ * Update the temperature.
+ */
+void updateTemperature() {
+  long raw = mpu.getTemperature();
+  
+  _temperature = raw / TEMPERATURE_SENSITIVITY + TEMPERATURE_CONSTANT;
+
+  if (sensor_emitter.count() > 0) {
+    StaticJsonDocument<64> doc;
+    char buffer[64];
+      
+    doc["temperature"] = _temperature;
+  
+    serializeJson(doc, buffer);
+
+    sensor_emitter.send(buffer, "temperature-updated");
   }
 }
 
@@ -855,8 +1031,12 @@ void stabilizer() {
  * Detect if collision with an object is iminent and stop the vehicle.
  */
 void detectCollision() {
-  if (lidar.ranging_data.range_mm + LIDAR_SENSOR_OFFSET < COLLISION_THRESHOLD) {
+  uint16_t distance = LIDAR_SENSOR_OFFSET + lidar.ranging_data.range_mm;
+  
+  if (distance < COLLISION_THRESHOLD) {
     stop();
+
+    malfunction_emitter.send("", "collision-detected");
   }
 }
 
@@ -864,10 +1044,12 @@ void detectCollision() {
  * Detect if the vehicle has rolled over.
  */
 void detectRollover() {
-  if (fabs(_orientation[1]) > ROLLOVER_THRESHOLD || fabs(_orientation[2]) > ROLLOVER_THRESHOLD) {
+  if (fabs(_pitch) > ROLLOVER_THRESHOLD || fabs(_roll) > ROLLOVER_THRESHOLD) {
     stop();
 
-    events.send("", "rollover-detected");
+    beep(4);
+
+    malfunction_emitter.send("", "rollover-detected");
   }
 }
 
@@ -877,66 +1059,55 @@ void detectRollover() {
 void updateBattery() {
   unsigned int raw = analogRead(BATTERY_PIN);
 
-  _battery_voltage = (raw / 1024.0) * MAX_VOLTAGE;
+  _battery_voltage = (raw / VOLTMETER_RESOLUTION) * MAX_VOLTAGE;
 
-  if (_battery_voltage > 0.0 && _battery_voltage < MIN_VOLTAGE) {
+  if (_battery_voltage > 0 && _battery_voltage < MIN_VOLTAGE) {
     stop();
-  
-    events.send("", "battery-undervoltage");
     
-    ESP.deepSleep(0);
-  }
-}
+    beep(1);
 
-/**
- * Beep the beeper n times.
- */
-void multibeep(unsigned int n) {
-  unsigned int i;
+    if (malfunction_emitter.count() > 0) {
+      StaticJsonDocument<64> doc;
+      char buffer[64];
+      
+      doc["voltage"] = _battery_voltage;
   
-  for (i = 0; i < n; i++) {
-    multibeep_timer.once_ms(i * BEEP_DELAY, beep);
+      serializeJson(doc, buffer);
+
+      malfunction_emitter.send(buffer, "battery-undervoltage");
+    }
+  } else if (sensor_emitter.count() > 0) {
+    StaticJsonDocument<64> doc;
+    char buffer[64];
+      
+    doc["voltage"] = _battery_voltage;
+  
+    serializeJson(doc, buffer);
+
+    sensor_emitter.send(buffer, "battery-voltage-updated");
   }
 }
 
 /**
  * Beep the beeper.
  */
-void beep() {
+void beep(uint8_t count) {
   digitalWrite(BEEPER_PIN, HIGH);
 
-  beep_timer.once_ms(BEEP_DURATION, silence);
+  count--;
+
+  beep_timer.once_ms(BEEP_DURATION, silenceBeeper, count);
 }
 
 /**
  * Silence the beeper.
  */
-void silence() {
+void silenceBeeper(uint8_t remaining) {
   digitalWrite(BEEPER_PIN, LOW);
-}
 
-/**
- * Broadcast the robot status.
- */
-void broadcastStatus() {
-  if (events.count() > 0) {
-    StaticJsonDocument<128> doc;
-    char buffer[128];
-
-    doc["battery_voltage"] = _battery_voltage;
-    doc["temperature"] = _temperature;
-
-    serializeJson(doc, buffer);
-
-    events.send(buffer, "status-update");
+  if (remaining > 0) {
+    beep_timer.once_ms(BEEP_DELAY, beep, remaining);
   }
-}
-
-/**
- * Calculate the number of motor ticks required to move x millimeters distance.
- */
-unsigned int calculateTargetTicks(float distance) {
-  return (int) round((distance / DISTANCE_PER_ROTATION) / GEAR_RATIO);
 }
 
 /**
@@ -956,7 +1127,7 @@ float calculateTargetAngle(float start, float delta) {
 }
 
 /**
- * Calculate the difference between the yaw lock and the current yaw.
+ * Calculate the difference between a target and the current yaw.
  */
 float calculateYawDelta(float current, float target) {
   float delta = target - current;
@@ -977,102 +1148,35 @@ float calculateYawDelta(float current, float target) {
 }
 
 /**
- * Bubble sort two arrays using the values in the first array for comparison.
+ * Generate a random weighted index.
  */
-void bmultisort(float a[], float b[], uint8_t n) {
-  uint8_t i, j, k;
-  float tempA, tempB;
-  bool swapped;
-   
-  for (i = 0; i < n - 1; i++) {
-    swapped = false;
-     
-    for (j = 0; j < n - i - 1; j++) {
-      k = j + 1;
-      
-      if (a[j] > a[k]) {
-        tempA = a[j];
-        tempB = b[j];
+uint8_t randomWeightedIndex(uint16_t weights[], uint8_t n) {
+  unsigned long sigma = 0.0;
 
-        a[j] = a[k];
-        a[k] = tempA;
+  for (uint8_t i = 0; i < n; i++) {
+    sigma += weights[i];
+  }
+ 
+  unsigned long delta = random(0, sigma);
+  
+  for (uint8_t i = 0; i < n; i++) {
+    delta -= weights[i];
 
-        b[j] = b[k];
-        b[k] = tempB;
-           
-        swapped = true;
-      }
-    } 
-   
-    if (!swapped) {
-      break; 
+    if (delta <= 0) {
+      return i;
     }
   }
+
+  return n - 1;
 }
 
 /**
- * Handle incoming serial commands.
+ * What to do when we don't know what to do.
  */
-void handleSerial() {
-  while (Serial.available() > 0) {
-    switch(Serial.read()) {
-      case 'e':
-        explore();
-  
-        break;
-  
-      case 'F':
-        forward();
-  
-        break;
-  
-      case 'L':
-        left();
-  
-        break;
-  
-      case 'l':
-        rotateLeft(HALF_PI);
-  
-        break;
-  
-      case 'R':
-        right();
-  
-        break;
-  
-      case 'r':
-        rotateRight(HALF_PI);
-  
-        break;
-  
-      case 'B':
-        reverse();
-  
-        break;
-        
-      case 'S':
-        stop();
-  
-        break;
-  
-      case 's':
-        scan();
-  
-        break;
+void panicNow() {
+  beep(4);
 
-      case '+':
-        setThrottle(_throttle + 50);
+  delay(4 * (BEEP_DURATION + BEEP_DELAY));
 
-        break;
-
-      case '-':
-        setThrottle(_throttle - 50);
-
-        break;
-  
-      default:
-        Serial.println("Command not recognized");
-    }
-  }
+  ESP.deepSleep(0);
 }
