@@ -118,7 +118,7 @@ export default Vue.extend({
         rotateLeft() : void {
             if (!this.isLeft) {
                 this.$http.put('/robot/rotator/left', {
-                    degrees: 45.0,
+                    radians: 45.0 * (Math.PI / 180),
                 }).then((response) => {
                     //
                 }).catch((error) => {
@@ -144,7 +144,7 @@ export default Vue.extend({
         rotateRight() : void {
             if (!this.isLeft) {
                 this.$http.put('/robot/rotator/right', {
-                    degrees: 45.0,
+                    radians: 45.0 * (Math.PI / 180),
                 }).then((response) => {
                     //
                 }).catch((error) => {

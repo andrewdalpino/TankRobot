@@ -72,7 +72,7 @@
 #define MOVER_SAMPLE_RATE LIDAR_SAMPLE_RATE
 
 #define ROTATOR_SAMPLE_RATE 50
-#define ROTATOR_THRESHOLD 2.0 * DEG_TO_RAD
+#define ROTATOR_THRESHOLD 3.0 * DEG_TO_RAD
 #define ROTATOR_P_GAIN 4.0
 #define ROTATOR_I_GAIN 0.5
 #define ROTATOR_D_GAIN 1.2
@@ -576,17 +576,18 @@ int handleNotFound(AsyncWebServerRequest *request) {
 /**
  * Move forward.
  */
-void forward() {
-  digitalWrite(MOTOR_A_DIRECTION_PIN, FORWARD);
-  digitalWrite(MOTOR_B_DIRECTION_PIN, FORWARD);
-  
+void forward() {  
   _direction = FORWARD;
   _yaw_lock = _yaw;
+  
   _stabilizer_delta_integral = 0.0;
   _stabilizer_prev_delta = 0.0;
 
   stabilizer_timer.attach_ms(STABILIZER_SAMPLE_RATE, stabilize);
   collision_timer.attach_ms(COLLISION_SAMPLE_RATE, detectCollision);
+
+  digitalWrite(MOTOR_A_DIRECTION_PIN, FORWARD);
+  digitalWrite(MOTOR_B_DIRECTION_PIN, FORWARD);
 
   go();
 }
@@ -594,11 +595,11 @@ void forward() {
 /**
  * Turn in the left direction.
  */
-void left() {  
+void left() {    
+  _direction = LEFT;
+
   digitalWrite(MOTOR_A_DIRECTION_PIN, FORWARD);
   digitalWrite(MOTOR_B_DIRECTION_PIN, REVERSE);
-  
-  _direction = LEFT;
 
   go();
 }
@@ -606,11 +607,11 @@ void left() {
 /**
  * Turn in the right direction.
  */
-void right() {
+void right() {  
+  _direction = RIGHT;
+
   digitalWrite(MOTOR_A_DIRECTION_PIN, REVERSE);
   digitalWrite(MOTOR_B_DIRECTION_PIN, FORWARD);
-  
-  _direction = RIGHT;
 
   go();
 }
@@ -619,15 +620,16 @@ void right() {
  * Move in reverse.
  */
 void reverse() {
-  digitalWrite(MOTOR_A_DIRECTION_PIN, REVERSE);
-  digitalWrite(MOTOR_B_DIRECTION_PIN, REVERSE);
-  
   _direction = REVERSE;
   _yaw_lock = _yaw;
+  
   _stabilizer_delta_integral = 0.0;
   _stabilizer_prev_delta = 0.0;
 
   stabilizer_timer.attach_ms(STABILIZER_SAMPLE_RATE, stabilize);
+
+  digitalWrite(MOTOR_A_DIRECTION_PIN, REVERSE);
+  digitalWrite(MOTOR_B_DIRECTION_PIN, REVERSE);
 
   go();
 }
@@ -635,29 +637,33 @@ void reverse() {
 /**
  * Engage the motors.
  */
-void go() {
-  analogWrite(MOTOR_A_THROTTLE_PIN, _throttle);
-  analogWrite(MOTOR_B_THROTTLE_PIN, _throttle);
-    
+void go() {    
   _stopped = false;
 
   rollover_timer.attach_ms(ROLLOVER_SAMPLE_RATE, detectRollover);
+
+  analogWrite(MOTOR_A_THROTTLE_PIN, _throttle);
+  analogWrite(MOTOR_B_THROTTLE_PIN, _throttle);
 }
 
 /**
  * Disengage the motors and related timers.
  */
 void stop() {
-  brake();
-
+  _stopped = true;
+    
   move_timer.detach();
   stabilizer_timer.detach();
   rotator_timer.detach();
   collision_timer.detach();
   rollover_timer.detach();
   explore_timer.detach();
-    
-  _stopped = true;
+  
+  brake();
+
+  _velocity.x = 0.0;
+  _velocity.y = 0.0;
+  _velocity.z = 0.0;
 }
 
 /**
@@ -666,10 +672,6 @@ void stop() {
 void brake() {
   analogWrite(MOTOR_A_THROTTLE_PIN, 0);
   analogWrite(MOTOR_B_THROTTLE_PIN, 0);
-
-  _velocity.x = 0.0;
-  _velocity.y = 0.0;
-  _velocity.z = 0.0;
 }
 
 /**
@@ -689,68 +691,72 @@ void setThrottle(int throttle) {
 /**
  * Rotate the vehicle x radians to the left.
  */
-void rotateLeft(float radians = HALF_PI) { 
-  digitalWrite(MOTOR_A_DIRECTION_PIN, FORWARD);
-  digitalWrite(MOTOR_B_DIRECTION_PIN, REVERSE);
+void rotateLeft(float radians) {
+  radians = constrain(radians, 0, TWO_PI);
+  
+  _yaw_lock = calculateTargetAngle(_yaw, -radians);
   
   _direction = LEFT;
   _rotating = true;
-
-  _yaw_lock = calculateTargetAngle(_yaw, -radians);
 
   _rotator_delta_integral = 0.0;
   _rotator_prev_delta = 0.0;
 
   rotator_timer.attach_ms(ROTATOR_SAMPLE_RATE, rotator);
+
+  digitalWrite(MOTOR_A_DIRECTION_PIN, FORWARD);
+  digitalWrite(MOTOR_B_DIRECTION_PIN, REVERSE);
 }
 
 /**
  * Rotate the vehicle by x radians to the right.
  */
-void rotateRight(float radians = HALF_PI) {
-  digitalWrite(MOTOR_A_DIRECTION_PIN, REVERSE);
-  digitalWrite(MOTOR_B_DIRECTION_PIN, FORWARD);
+void rotateRight(float radians) {
+  radians = constrain(radians, 0, TWO_PI);
+
+  _yaw_lock = calculateTargetAngle(_yaw, radians);
    
   _direction = RIGHT;
   _rotating = true;
-  
-  _yaw_lock = calculateTargetAngle(_yaw, radians);
 
   _rotator_delta_integral = 0.0;
   _rotator_prev_delta = 0.0;
 
   rotator_timer.attach_ms(ROTATOR_SAMPLE_RATE, rotator);
+
+  digitalWrite(MOTOR_A_DIRECTION_PIN, REVERSE);
+  digitalWrite(MOTOR_B_DIRECTION_PIN, FORWARD);
 }
 
 /**
- * Rotate left.
+ * Handle the rotate left request.
  */
 void handleRotateLeft(AsyncWebServerRequest *request, JsonVariant &json) {
   const JsonObject& doc = json.as<JsonObject>();
 
-  if (doc.containsKey("degrees")) {
-    float degrees = (float) doc["degrees"];
+  if (doc.containsKey("radians")) {
+    float radians = (float) doc["radians"];
       
-    rotateLeft(degrees * DEG_TO_RAD);
+    rotateLeft(radians);
   } else {
-    rotateLeft();
+    rotateLeft(HALF_PI);
   }
 
   request->send(HTTP_OK);
 }
 
 /**
- * Handle the stop movement request.
+ * Handle the rotate right request.
  */
 void handleRotateRight(AsyncWebServerRequest *request, JsonVariant &json) {
   const JsonObject& doc = json.as<JsonObject>();
 
-  if (doc.containsKey("degrees")) {
-    float degrees = (float) doc["degrees"];
+  if (doc.containsKey("radians")) {
+    float radians = (float) doc["radians"];
       
-    rotateRight(degrees * DEG_TO_RAD);
+    rotateRight(radians);
   } else {
-    rotateRight();
+    rotateRight(HALF_PI);
   }
   
   request->send(HTTP_OK);
@@ -890,8 +896,8 @@ void scanLoop() {
         break;
     }
 
-    _scan_angles[_scan_count] = _yaw;
     _distances_to_object[_scan_count] = distance + LIDAR_SENSOR_OFFSET;
+    _scan_angles[_scan_count] = _yaw;
    
     _scan_count++;
     
