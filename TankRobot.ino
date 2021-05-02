@@ -33,7 +33,7 @@
 #define MOTOR_A_THROTTLE_PIN 5
 #define MOTOR_B_DIRECTION_PIN 2
 #define MOTOR_B_THROTTLE_PIN 4
-#define MIN_THROTTLE 500
+#define MIN_THROTTLE 700
 #define MAX_THROTTLE 1000
 
 #define FORWARD 1
@@ -48,14 +48,30 @@
 #define MPU_ADDRESS 0x68
 #define MPU_INTERRUPT_PIN 10
 #define MPU_MAX_FIFO_COUNT 1024
-#define GYRO_CALIBRATION_LOOPS 8
-#define ACCEL_CALIBRATION_LOOPS 8
+#define GYRO_CALIBRATION_LOOPS 6
+#define GRAVITY_SAMPLE_RATE 10
+#define ORIENTATION_SAMPLE_RATE GRAVITY_SAMPLE_RATE
+#define ACCEL_CALIBRATION_LOOPS 6
 #define LOW_PASS_FILTER_MODE 3
+#define ACCEL_SAMPLE_RATE 10
+#define ACCEL_HIGH_PASS_COEF 0.6
 #define ACCEL_LSB_PER_G 16384.0
-#define VELOCITY_SAMPLE_RATE 50
+#define VELOCITY_SAMPLE_RATE ACCEL_SAMPLE_RATE
+#define DISPLACEMENT_SAMPLE_RATE VELOCITY_SAMPLE_RATE
 #define TEMPERATURE_SAMPLE_RATE 1500
 #define TEMPERATURE_SENSITIVITY 340.0
 #define TEMPERATURE_CONSTANT 36.53
+
+#define ROTATOR_SAMPLE_RATE ORIENTATION_SAMPLE_RATE
+#define ROTATOR_THRESHOLD 3.0 * DEG_TO_RAD
+#define ROTATOR_P_GAIN 2.0
+#define ROTATOR_I_GAIN 0.7
+#define ROTATOR_D_GAIN 1.4
+
+#define STABILIZER_SAMPLE_RATE 50
+#define STABILIZER_P_GAIN 0.6
+#define STABILIZER_I_GAIN 0.8
+#define STABILIZER_D_GAIN 0.3
 
 #define LIDAR_ADDRESS 0x52
 #define LIDAR_TIMEOUT 500
@@ -68,19 +84,6 @@
 #define LIDAR_NOISY_SIGNAL 1
 #define LIDAR_SIGNAL_FAILURE 2
 #define LIDAR_PHASE_OUT_OF_BOUNDS 4
-
-#define MOVER_SAMPLE_RATE LIDAR_SAMPLE_RATE
-
-#define ROTATOR_SAMPLE_RATE 50
-#define ROTATOR_THRESHOLD 3.0 * DEG_TO_RAD
-#define ROTATOR_P_GAIN 4.0
-#define ROTATOR_I_GAIN 0.5
-#define ROTATOR_D_GAIN 1.2
-
-#define STABILIZER_SAMPLE_RATE 100
-#define STABILIZER_P_GAIN 0.6
-#define STABILIZER_I_GAIN 0.8
-#define STABILIZER_D_GAIN 0.3
 
 #define SCAN_SAMPLE_RATE 250
 #define SCAN_WINDOW M_PI
@@ -100,6 +103,7 @@
 #define STATUS_SAMPLE_RATE 3000
 
 AsyncWebServer server(HTTP_PORT);
+
 AsyncEventSource sensor_emitter("/robot/sensors/events");
 AsyncEventSource malfunction_emitter("/robot/malfunctions/events");
 
@@ -108,16 +112,16 @@ float _battery_voltage;
 Ticker battery_timer;
 
 uint8_t _direction = FORWARD;
-int _throttle = 750;
+int _throttle = 850;
 bool _stopped = true;
 
 MPU6050 mpu(MPU_ADDRESS);
 
 Quaternion _q;
 VectorFloat _gravity;
-VectorInt16 _aa, _aa_real;
-VectorFloat _acceleration, _velocity;
-VectorFloat _prev_acceleration;
+VectorInt16 _aa, _aa_real, _prev_aa_real;
+VectorFloat _acceleration, _velocity, _displacement;
+VectorFloat _prev_acceleration, _prev_velocity;
 float _yaw, _pitch, _roll;
 float _yaw_lock, _temperature;
 uint8_t _dmp_fifo_buffer[64];
@@ -125,8 +129,9 @@ uint16_t _dmp_packet_size;
 void ICACHE_RAM_ATTR dmpDataReady();
 volatile bool _dmp_ready = false;
 
+Ticker gravity_timer, orientation_timer;
+Ticker acceleration_timer, velocity_timer, displacement_timer;
 Ticker temperature_timer, rollover_timer;
-Ticker velocity_timer;
 
 bool _moving = false;
 
@@ -291,16 +296,19 @@ void setupHttpServer() {
   server.serveStatic("/fonts/fa-solid-900.woff", SPIFFS, "/fonts/fa-solid-900.woff");
   server.serveStatic("/sounds/plucky.ogg", SPIFFS, "/sounds/plucky.ogg");
 
-  server.addHandler(new AsyncCallbackJsonWebHandler("/robot/motors/direction", handleChangeDirection));
-  server.addHandler(new AsyncCallbackJsonWebHandler("/robot/motors/throttle", handleSetThrottle));
-  server.addHandler(new AsyncCallbackJsonWebHandler("/robot/rotator/left", handleRotateLeft));
-  server.addHandler(new AsyncCallbackJsonWebHandler("/robot/rotator/right", handleRotateRight));
-
   server.on("/robot", HTTP_GET, handleGetRobot);
   server.on("/robot/motors", HTTP_DELETE, handleStop);
   server.on("/robot/features/beeper", HTTP_PUT, handleBeep);
   server.on("/robot/features/autonomy", HTTP_PUT, handleExplore);
   server.on("/robot/features/autonomy", HTTP_DELETE, handleStop);
+
+  server.addHandler(new AsyncCallbackJsonWebHandler("/robot/motors/direction", handleChangeDirection));
+  server.addHandler(new AsyncCallbackJsonWebHandler("/robot/motors/throttle", handleSetThrottle));
+  server.addHandler(new AsyncCallbackJsonWebHandler("/robot/rotator/left", handleRotateLeft));
+  server.addHandler(new AsyncCallbackJsonWebHandler("/robot/rotator/right", handleRotateRight));
+
+  server.addHandler(&sensor_emitter);
+  server.addHandler(&malfunction_emitter);
 
   server.onNotFound(handleNotFound);
 
@@ -380,11 +388,12 @@ void setupMPU() {
 
   attachInterrupt(digitalPinToInterrupt(MPU_INTERRUPT_PIN), dmpDataReady, RISING);
 
-  Serial.println("DMP initialized");
-
+  gravity_timer.attach_ms(GRAVITY_SAMPLE_RATE, updateGravity);
+  orientation_timer.attach_ms(ORIENTATION_SAMPLE_RATE, updateOrientation);
+  acceleration_timer.attach_ms(ACCEL_SAMPLE_RATE, updateAcceleration);
   temperature_timer.attach_ms(TEMPERATURE_SAMPLE_RATE, updateTemperature);
 
-  velocity_timer.attach_ms(VELOCITY_SAMPLE_RATE, updateVelocity);
+  Serial.println("DMP initialized");
 }
 
 /**
@@ -418,7 +427,13 @@ void setupRandom() {
 /**
  * Main event loop.
  */
-void loop() {    
+void loop() {
+  if (lidar.dataReady()) {
+    lidar.read(false);
+  }
+
+  yield();
+    
   if (_dmp_ready) {
     uint8_t mpu_int_status = mpu.getIntStatus();
     uint16_t fifo_count = mpu.getFIFOCount();
@@ -428,28 +443,28 @@ void loop() {
     } else if (mpu_int_status & 0x10 || fifo_count >= MPU_MAX_FIFO_COUNT) {
       mpu.resetFIFO();
     } else if (mpu_int_status & 0x02) {
-      readDMPBuffer(fifo_count);
+      while (fifo_count >= _dmp_packet_size) {
+        mpu.getFIFOBytes(_dmp_fifo_buffer, _dmp_packet_size);
 
-      updateOrientation();
+        fifo_count -= _dmp_packet_size;
+      }
 
-      updateAcceleration();
+      mpu.dmpGetQuaternion(&_q, _dmp_fifo_buffer);
+
+      mpu.dmpGetAccel(&_aa, _dmp_fifo_buffer);
     }
+
+    _dmp_ready = false;
   }
 
-  yield();
-
-  Serial.print("Velocity X: ");
-  Serial.print(_velocity.x);
-  Serial.print("\t");
-  Serial.print("Veclocity Y: ");
-  Serial.print(_velocity.y);
-  Serial.print("\t");
-  Serial.print("Veclocity Z: ");
-  Serial.println(_velocity.z);
-
-  if (lidar.dataReady()) {
-    lidar.read(false);
-  }
+//  Serial.print("X: ");
+//  Serial.print(_displacement.x, 4);
+//  Serial.print("\t");
+//  Serial.print("Y: ");
+//  Serial.print(_displacement.y, 4);
+//  Serial.print("\t");
+//  Serial.print("Z: ");
+//  Serial.println(_displacement.z, 4);
 }
 
 /**
@@ -650,7 +665,7 @@ void go() {
  * Disengage the motors and related timers.
  */
 void stop() {
-  _stopped = true;
+  brake();
     
   move_timer.detach();
   stabilizer_timer.detach();
@@ -658,18 +673,14 @@ void stop() {
   collision_timer.detach();
   rollover_timer.detach();
   explore_timer.detach();
-  
-  brake();
-
-  _velocity.x = 0.0;
-  _velocity.y = 0.0;
-  _velocity.z = 0.0;
 }
 
 /**
  * Apply the brake to the motors.
  */
 void brake() {
+  _stopped = true;
+    
   analogWrite(MOTOR_A_THROTTLE_PIN, 0);
   analogWrite(MOTOR_B_THROTTLE_PIN, 0);
 }
@@ -780,7 +791,7 @@ void rotator() {
 
   float alpha = min(fabs(theta) / M_PI, 1.0);
 
-  unsigned int rotator_throttle = (int) round(alpha * _throttle);
+  unsigned int rotator_throttle = max(MIN_THROTTLE, (int) round(alpha * _throttle));
 
   if (theta < 0.0) {
     if (_direction != LEFT) {
@@ -805,6 +816,8 @@ void rotator() {
     brake();
 
     _rotating = false;
+
+    rotator_timer.detach();
   } else {
     _rotator_prev_delta = delta;
   }
@@ -817,7 +830,6 @@ void explore() {
   stop();
 
   _explore_step = 0;
-  _exploring = true;
   
   explore_timer.attach_ms(EXPLORE_SAMPLE_RATE, exploreLoop);
 }
@@ -844,7 +856,7 @@ void exploreLoop() {
 
       _explore_step = 2;
     } else if (_explore_step == 2) {
-      move(3000);
+      move(2000);
 
       _explore_step = 0;
     }
@@ -855,11 +867,20 @@ void exploreLoop() {
  * Move the robot forward.
  */
 void move(unsigned long duration) {
-  move_timer.attach_ms(duration, stop);
-  
   _moving = true;
 
   forward();
+
+  move_timer.once_ms(duration, stopMoving);
+}
+
+/**
+ * Stop moving.
+ */
+void stopMoving() {
+  _moving = false;
+
+  brake();
 }
 
 /**
@@ -884,15 +905,18 @@ void scanLoop() {
     switch (lidar.ranging_data.range_status) {
       case LIDAR_RANGE_VALID:
         distance = lidar.ranging_data.range_mm;
+        
         break;
 
       case LIDAR_NOISY_SIGNAL:
         distance = 0.5 * lidar.ranging_data.range_mm;
+        
         break;
 
       case LIDAR_SIGNAL_FAILURE:
       case LIDAR_PHASE_OUT_OF_BOUNDS:
         distance = LIDAR_MAX_RANGE;
+        
         break;
     }
 
@@ -962,26 +986,16 @@ void dmpDataReady() {
 }
 
 /**
- * Read the DMP FIFO buffer into memory.
+ * Update the gravity vector.
  */
-void readDMPBuffer(int fifo_count) {
-  while (fifo_count >= _dmp_packet_size) {
-    mpu.getFIFOBytes(_dmp_fifo_buffer, _dmp_packet_size);
-
-    fifo_count -= _dmp_packet_size;
-  }
-
-  _dmp_ready = false;
+void updateGravity() {
+  mpu.dmpGetGravity(&_gravity, &_q);
 }
 
 /**
  * Calculate the current yaw, pitch, and roll using the quatrernion and gravity vector from the onboard Digital Motion Processeor.
  */
-void updateOrientation() {
-  mpu.dmpGetQuaternion(&_q, _dmp_fifo_buffer);
-        
-  mpu.dmpGetGravity(&_gravity, &_q);
-        
+void updateOrientation() {        
   _yaw = atan2(2.0 * -_q.x * _q.y - 2.0 * _q.w * -_q.z, 2.0 * pow(_q.w, 2) + 2.0 * pow(_q.x, 2) - 1.0);
   
   _pitch = atan2(-_gravity.x, sqrt(pow(_gravity.y, 2) + pow(_gravity.z, 2)));
@@ -993,24 +1007,35 @@ void updateOrientation() {
  * Update the current linear acceleration of the vehicle with gravity vector removed.
  */
 void updateAcceleration() {
-  mpu.dmpGetAccel(&_aa, _dmp_fifo_buffer);
-
   mpu.dmpGetLinearAccel(&_aa_real, &_aa, &_gravity);
 
-  _prev_acceleration = _acceleration;
+  _acceleration.x = ACCEL_HIGH_PASS_COEF * (_acceleration.x + (-_aa_real.x + _prev_aa_real.x) / ACCEL_LSB_PER_G);
+  _acceleration.y = ACCEL_HIGH_PASS_COEF * (_acceleration.y + (_aa_real.y - _prev_aa_real.y) / ACCEL_LSB_PER_G);
+  _acceleration.z = ACCEL_HIGH_PASS_COEF * (_acceleration.y + (-_aa_real.z + _prev_aa_real.z) / ACCEL_LSB_PER_G);
 
-  _acceleration.x = -_aa_real.x / ACCEL_LSB_PER_G;
-  _acceleration.y = _aa_real.y / ACCEL_LSB_PER_G;
-  _acceleration.z = -_aa_real.z / ACCEL_LSB_PER_G;
+  _prev_aa_real = _aa_real;
 }
 
 /**
- * Update the velocity of the vehicle by inegrating acceleration.
+ * Update the velocity of the vehicle by integrating acceleration.
  */
 void updateVelocity() {
   _velocity.x += 0.5 * (_acceleration.x + _prev_acceleration.x);
-  _velocity.y += 0.5 * (_acceleration.y + _prev_acceleration.x);
-  _velocity.z += 0.5 * (_acceleration.z + _prev_acceleration.x);
+  _velocity.y += 0.5 * (_acceleration.y + _prev_acceleration.y);
+  _velocity.z += 0.5 * (_acceleration.z + _prev_acceleration.z);
+
+  _prev_acceleration = _acceleration;
+}
+
+/**
+ * Update the displacement of the vehicle by integrating velocity.
+ */
+void updateDisplacement() {
+  _displacement.x += 0.5 * (_velocity.x + _prev_velocity.x);
+  _displacement.y += 0.5 * (_velocity.y + _prev_velocity.y);
+  _displacement.z += 0.5 * (_velocity.z + _prev_velocity.z);
+
+  _prev_velocity = _velocity;
 }
 
 /**

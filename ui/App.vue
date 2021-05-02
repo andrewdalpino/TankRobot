@@ -20,18 +20,9 @@ export default Vue.extend({
     data() {
         return {
             robot: {
-                motors: {
-                    direction: null,
-                    throttle: 0,
-                    stopped: true,
-                },
-                sensors: {
-                    voltage: null,
-                    temperature: null,
-                },
-                features: {
-                    autonomous: false,
-                },
+                motors: undefined,
+                sensors: undefined,
+                features: undefined,
             },
             loading: false,
         };

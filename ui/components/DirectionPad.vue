@@ -9,7 +9,7 @@
                 </button>
             </p>
             <p class="control">
-                <button class="button is-large" :class="isForward ? 'is-success' : 'is-info'" @click="forward()">
+                <button class="button is-large" :class="isForward ? 'is-success' : 'is-info'" @mousedown="forward()" @mouseup="stop()">
                     <span class="icon">
                         <i class="fas fa-chevron-circle-up"></i>
                     </span>
@@ -25,7 +25,7 @@
         </div>
         <div class="field is-grouped is-grouped-centered">
             <p class="control">
-                <button class="button is-large" :class="isLeft ? 'is-success' : 'is-info'" @click="left()">
+                <button class="button is-large" :class="isLeft ? 'is-success' : 'is-info'" @mousedown="left()" @mouseup="stop()">
                     <span class="icon">
                         <i class="fas fa-chevron-circle-left"></i>
                     </span>
@@ -39,7 +39,7 @@
                 </button>
             </p>
             <p class="control">
-                <button class="button is-large" :class="isRight ? 'is-success' : 'is-info'"  @click="right()">
+                <button class="button is-large" :class="isRight ? 'is-success' : 'is-info'" @mousedown="right()" @mouseup="stop()">
                     <span class="icon">
                         <i class="fas fa-chevron-circle-right"></i>
                     </span>
@@ -55,7 +55,7 @@
                 </button>
             </p>
             <p class="control">
-                <button class="button is-large" :class="isReverse ? 'is-success' : 'is-info'" @click="reverse()">
+                <button class="button is-large" :class="isReverse ? 'is-success' : 'is-info'" @mousedown="reverse()" @mouseup="stop()">
                     <span class="icon">
                         <i class="fas fa-chevron-circle-down"></i>
                     </span>
