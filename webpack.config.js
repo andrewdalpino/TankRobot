@@ -94,6 +94,7 @@ module.exports = [{
                     name: '[name].[ext]',
                     outputPath: '/sounds/',
                     publicPath: '/sounds/',
+                    esModule: false,
                 },
             },
         ],
