@@ -55,7 +55,6 @@
 #define ACCEL_CALIBRATION_LOOPS 6
 #define ACCEL_SAMPLE_RATE 10
 #define ACCEL_LSB_PER_G 16384.0
-#define ACCEL_HIGH_PASS_COEF 0.7
 #define VELOCITY_SAMPLE_RATE ACCEL_SAMPLE_RATE
 #define DISPLACEMENT_SAMPLE_RATE VELOCITY_SAMPLE_RATE
 #define TEMPERATURE_SAMPLE_RATE 1000
@@ -126,9 +125,9 @@ MPU6050 mpu(MPU_ADDRESS);
 
 Quaternion _q;
 VectorInt16 _aa;
-VectorFloat _gravity, _aa_real;
+VectorFloat _gravity;
 VectorFloat _acceleration, _velocity, _displacement;
-VectorFloat _prev_aa_real, _prev_acceleration, _prev_velocity;
+VectorFloat _prev_acceleration, _prev_velocity;
 float _yaw, _pitch, _roll;
 float _yaw_lock, _temperature;
 uint8_t _dmp_fifo_buffer[64];
@@ -153,7 +152,7 @@ Ticker stabilizer_timer;
 VL53L1X lidar;
 
 float _scan_angles[NUM_SCANS];
-uint16_t _distances_to_object[NUM_SCANS];
+unsigned int _distances_to_object[NUM_SCANS];
 uint8_t _scan_count;
 
 Ticker scan_timer, collision_timer;
@@ -827,7 +826,7 @@ void explorer() {
   if (!scan_timer.active() && !mover_timer.active() && !rotator_timer.active()) {
     switch (_explorer_step) {
       case 0: {
-        scan();
+        scanEnvironment();
         
         _explorer_step = 1;
       }
@@ -835,15 +834,7 @@ void explorer() {
       break;
 
       case 1: {
-        uint8_t index = randomWeightedIndex(_distances_to_object, NUM_SCANS);
-
-        float delta = calculateYawDelta(_yaw, _scan_angles[index]);
-
-        if (delta < 0.0) {
-          rotateLeft(fabs(delta));
-        } else {
-          rotateRight(delta);
-        }
+        choosePath();
 
         _explorer_step = 2;
       }
@@ -862,40 +853,20 @@ void explorer() {
 }
 
 /**
- * Move the robot forward.
- */
-void move(unsigned long duration) {
-  forward();
-
-  mover_timer.once_ms(duration, stopMoving);
-}
-
-/**
- * Stop moving.
- */
-void stopMoving() {
-  brake();
-
-  stabilizer_timer.detach();
-  collision_timer.detach();
-  mover_timer.detach();
-}
-
-/**
  * Scan the environment.
  */
-void scan() {
+void scanEnvironment() {
   rotateRight(0.5 * SCAN_WINDOW);
     
   _scan_count = 0;
 
-  scan_timer.attach_ms(SCAN_SAMPLE_RATE, scanLoop);
+  scan_timer.attach_ms(SCAN_SAMPLE_RATE, scanner);
 }
 
 /**
  * Control loop to scan the environment for objects.
  */
-void scanLoop() {
+void scanner() {
   if (!rotator_timer.active()) {
     int distance;
     
@@ -930,6 +901,57 @@ void scanLoop() {
       scan_timer.detach();
     }
   }
+}
+
+/**
+ * Choose a path to traverse.
+ */
+void choosePath() {
+  unsigned int sigma = 0;
+
+  for (uint8_t i = 0; i < NUM_SCANS; i++) {
+    sigma += _distances_to_object[i];
+  }
+ 
+  unsigned int rho = random(0, sigma);
+
+  float delta;
+  
+  for (uint8_t i = 0; i < NUM_SCANS; i++) {
+    rho -= _distances_to_object[i];
+
+    if (rho <= 0) {
+      delta = calculateYawDelta(_yaw, _scan_angles[i]);
+            
+      break;
+    }
+  }
+
+  if (delta < 0.0) {
+    rotateLeft(fabs(delta));
+  } else {
+    rotateRight(delta);
+  }
+}
+
+/**
+ * Move the robot forward.
+ */
+void move(unsigned long duration) {
+  forward();
+
+  mover_timer.once_ms(duration, stopMoving);
+}
+
+/**
+ * Stop moving.
+ */
+void stopMoving() {
+  brake();
+
+  stabilizer_timer.detach();
+  collision_timer.detach();
+  mover_timer.detach();
 }
 
 /**
@@ -1007,18 +1029,12 @@ void updateOrientation() {
 }
 
 /**
- * Update the current linear acceleration of the vehicle with gravity vector removed.
+ * Update the current acceleration of the vehicle with gravity vector removed.
  */
 void updateAcceleration() {
-  _aa_real.x = (_aa.x / ACCEL_LSB_PER_G) - _gravity.x;
-  _aa_real.y = (_aa.y / ACCEL_LSB_PER_G) - _gravity.y;
-  _aa_real.z = (_aa.z / ACCEL_LSB_PER_G) - _gravity.z;
-
-  _acceleration.x = ACCEL_HIGH_PASS_COEF * (_acceleration.x + _aa_real.x - _prev_aa_real.x);
-  _acceleration.y = ACCEL_HIGH_PASS_COEF * (_acceleration.y + _aa_real.y - _prev_aa_real.y);
-  _acceleration.z = ACCEL_HIGH_PASS_COEF * (_acceleration.y + _aa_real.z - _prev_aa_real.z);
-
-  _prev_aa_real = _aa_real;
+  _acceleration.x = (-_aa.x / ACCEL_LSB_PER_G) - _gravity.x;
+  _acceleration.y = (_aa.y / ACCEL_LSB_PER_G) - _gravity.y;
+  _acceleration.z = (-_aa.z / ACCEL_LSB_PER_G) - _gravity.z;
 }
 
 /**
@@ -1181,31 +1197,6 @@ float calculateYawDelta(float current, float target) {
   }
 
   return delta;
-}
-
-/**
- * Samples a random weighted index.
- */
-uint8_t randomWeightedIndex(uint16_t weights[], uint8_t n) {
-  uint8_t index;
-  
-  long sigma = 0;
-
-  for (index = 0; index < n; index++) {
-    sigma += weights[index];
-  }
- 
-  long delta = random(sigma);
-  
-  for (index = 0; index < n; index++) {
-    delta -= weights[index];
-
-    if (delta <= 0) {
-      return index;
-    }
-  }
-
-  return n - 1;
 }
 
 /**
