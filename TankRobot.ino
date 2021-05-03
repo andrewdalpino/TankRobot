@@ -472,7 +472,7 @@ int handleGetRobot(AsyncWebServerRequest *request) {
   JsonObject motors = robot.createNestedObject("motors");
 
   motors["direction"] = _direction;
-  motors["throttle"] = 100.0 * (_throttle / MAX_THROTTLE);
+  motors["throttle"] = throttlePercentage();
   motors["stopped"] = _stopped;
 
   JsonObject sensors = robot.createNestedObject("sensors");
@@ -565,7 +565,13 @@ void handleSetThrottle(AsyncWebServerRequest *request, JsonVariant &json) {
     return;
   }
 
-  int throttle = (int) doc["throttle"];
+  int throttle = doc["throttle"];
+
+  if (throttle < 0 || throttle > 100) {
+    request->send(HTTP_UNPROCESSABLE_ENTITY);
+
+    return;
+  }
 
   setThrottle(throttle);
 
@@ -577,6 +583,13 @@ void handleSetThrottle(AsyncWebServerRequest *request, JsonVariant &json) {
  */
 int handleNotFound(AsyncWebServerRequest *request) {
   request->send(HTTP_NOT_FOUND);
+}
+
+/**
+ * Returns the throttle position as a percentage.
+ */
+unsigned int throttlePercentage() {
+  return (unsigned int) round(100 * (_throttle / MAX_THROTTLE));
 }
 
 /**
