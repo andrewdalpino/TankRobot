@@ -24,7 +24,7 @@
 #define HTTP_UNPROCESSABLE_ENTITY 422
 
 #define BATTERY_PIN A0
-#define BATTERY_SAMPLE_RATE 3000
+#define BATTERY_SAMPLE_RATE 1000
 #define VOLTMETER_RESOLUTION 1024.0
 #define MIN_VOLTAGE 6.0
 #define MAX_VOLTAGE 8.4
@@ -48,17 +48,17 @@
 #define MPU_ADDRESS 0x68
 #define MPU_INTERRUPT_PIN 10
 #define MPU_MAX_FIFO_COUNT 1024
+#define LOW_PASS_FILTER_MODE 3
 #define GYRO_CALIBRATION_LOOPS 6
 #define GRAVITY_SAMPLE_RATE 10
 #define ORIENTATION_SAMPLE_RATE GRAVITY_SAMPLE_RATE
 #define ACCEL_CALIBRATION_LOOPS 6
-#define LOW_PASS_FILTER_MODE 3
 #define ACCEL_SAMPLE_RATE 10
 #define ACCEL_LSB_PER_G 16384.0
 #define ACCEL_HIGH_PASS_COEF 0.7
 #define VELOCITY_SAMPLE_RATE ACCEL_SAMPLE_RATE
 #define DISPLACEMENT_SAMPLE_RATE VELOCITY_SAMPLE_RATE
-#define TEMPERATURE_SAMPLE_RATE 1500
+#define TEMPERATURE_SAMPLE_RATE 1000
 #define TEMPERATURE_SENSITIVITY 340.0
 #define TEMPERATURE_CONSTANT 36.53
 
@@ -67,6 +67,8 @@
 #define ROTATOR_P_GAIN 2.0
 #define ROTATOR_I_GAIN 0.7
 #define ROTATOR_D_GAIN 1.4
+
+#define MOVER_SAMPLE_RATE DISPLACEMENT_SAMPLE_RATE 
 
 #define STABILIZER_SAMPLE_RATE 50
 #define STABILIZER_P_GAIN 0.6
@@ -79,7 +81,6 @@
 #define LIDAR_TIMING_BUDGET 100000
 #define LIDAR_SAMPLE_RATE 100
 #define LIDAR_MAX_RANGE 4000
-
 #define LIDAR_RANGE_VALID 0
 #define LIDAR_NOISY_SIGNAL 1
 #define LIDAR_SIGNAL_FAILURE 2
@@ -96,11 +97,17 @@
 #define ROLLOVER_THRESHOLD HALF_PI
 
 #define BEEPER_PIN D7
-#define BEEP_DURATION 150
-#define BEEP_DELAY 50
+#define BEEP_DURATION 130
+#define BEEP_DELAY 40
 
 #define EXPLORE_SAMPLE_RATE 500
 #define STATUS_SAMPLE_RATE 3000
+
+#define EPSILON 1e-8
+
+const IPAddress _ip(192,168,4,1);
+const IPAddress _gateway(192,168,4,1);
+const IPAddress _subnet(255,255,255,0);
 
 AsyncWebServer server(HTTP_PORT);
 
@@ -111,8 +118,8 @@ float _battery_voltage;
 
 Ticker battery_timer;
 
-uint8_t _direction = FORWARD;
 int _throttle = 850;
+uint8_t _direction = FORWARD;
 bool _stopped = true;
 
 MPU6050 mpu(MPU_ADDRESS);
@@ -133,12 +140,9 @@ Ticker gravity_timer, orientation_timer;
 Ticker acceleration_timer, velocity_timer, displacement_timer;
 Ticker temperature_timer, rollover_timer;
 
-bool _moving = false;
-
 Ticker mover_timer;
 
 float _rotator_prev_delta, _rotator_delta_integral;
-bool _rotating = false;
 
 Ticker rotator_timer;
 
@@ -150,13 +154,11 @@ VL53L1X lidar;
 
 float _scan_angles[NUM_SCANS];
 uint16_t _distances_to_object[NUM_SCANS];
-bool _scanning = false;
 uint8_t _scan_count;
 
 Ticker scan_timer, collision_timer;
 
-unsigned int _explore_step;
-bool _exploring = false;
+uint8_t _explorer_step;
 
 Ticker explore_timer;
 
@@ -188,7 +190,7 @@ void setup() {
 
   setupRandom();
 
-  Serial.println("Ready");
+  Serial.println("Ready!");
 }
 
 /**
@@ -233,7 +235,7 @@ void setupROM() {
   Serial.println("kb");
 
   Serial.print("Free space: ");
-  Serial.print(ESP.getFreeSketchSpace() / 1024.0);
+  Serial.print(ESP.getFreeSketchSpace() / 1024.0, 1);
   Serial.println("kb");
 
   Serial.print("ROM speed: ");
@@ -257,12 +259,8 @@ void setupSPIFFS() {
 /**
  * Set up the wireless access point.
  */
-void setupAccessPoint() {
-  const IPAddress ip(192,168,4,1);
-  const IPAddress gateway(192,168,4,1);
-  const IPAddress subnet(255,255,255,0);
-  
-  WiFi.softAPConfig(ip, gateway, subnet);
+void setupAccessPoint() {  
+  WiFi.softAPConfig(_ip, _gateway, _subnet);
   WiFi.softAP(AP_SSID, AP_PASSWORD, AP_CHANNEL, AP_HIDDEN, AP_MAX_CONNECTIONS);
 
   Serial.println("Access point ready");
@@ -339,6 +337,8 @@ void setupMotors() {
   pinMode(MOTOR_B_DIRECTION_PIN, OUTPUT);
   pinMode(MOTOR_B_THROTTLE_PIN, OUTPUT);
 
+  analogWriteFreq(MAX_THROTTLE);
+
   brake();
 
   Serial.println("Motors enabled");
@@ -368,15 +368,19 @@ void setupMPU() {
     panicNow();
   }
 
-  Serial.print("Calibrating ");
-
-  mpu.CalibrateGyro(GYRO_CALIBRATION_LOOPS);
-  mpu.CalibrateAccel(ACCEL_CALIBRATION_LOOPS);
-
   mpu.setFullScaleGyroRange(MPU6050_GYRO_FS_250);
   mpu.setFullScaleAccelRange(MPU6050_ACCEL_FS_2);
+  
   mpu.setDLPFMode(LOW_PASS_FILTER_MODE);
   mpu.setSleepEnabled(false);
+
+  Serial.print("Calibrating gyroscope ");
+  mpu.CalibrateGyro(GYRO_CALIBRATION_LOOPS);
+  Serial.println(" done");
+
+  Serial.print("Calibrating accelerometer ");
+  mpu.CalibrateAccel(ACCEL_CALIBRATION_LOOPS);
+  Serial.println(" done");
 
   mpu.dmpInitialize();
   
@@ -390,7 +394,6 @@ void setupMPU() {
 
   gravity_timer.attach_ms(GRAVITY_SAMPLE_RATE, updateGravity);
   orientation_timer.attach_ms(ORIENTATION_SAMPLE_RATE, updateOrientation);
-  acceleration_timer.attach_ms(ACCEL_SAMPLE_RATE, updateAcceleration);
   temperature_timer.attach_ms(TEMPERATURE_SAMPLE_RATE, updateTemperature);
 
   Serial.println("DMP initialized");
@@ -479,8 +482,6 @@ int handleGetRobot(AsyncWebServerRequest *request) {
   sensors["temperature"] = _temperature;
 
   JsonObject features = robot.createNestedObject("features");
-
-  features["autonomy"] = _exploring;
   
   serializeJson(doc, buffer);
 
@@ -697,7 +698,6 @@ void rotateLeft(float radians) {
   _yaw_lock = calculateTargetAngle(_yaw, -radians);
   
   _direction = LEFT;
-  _rotating = true;
 
   _rotator_delta_integral = 0.0;
   _rotator_prev_delta = 0.0;
@@ -717,7 +717,6 @@ void rotateRight(float radians) {
   _yaw_lock = calculateTargetAngle(_yaw, radians);
    
   _direction = RIGHT;
-  _rotating = true;
 
   _rotator_delta_integral = 0.0;
   _rotator_prev_delta = 0.0;
@@ -804,8 +803,6 @@ void rotator() {
   if (fabs(delta) < ROTATOR_THRESHOLD) {    
     brake();
 
-    _rotating = false;
-
     rotator_timer.detach();
   } else {
     _rotator_prev_delta = delta;
@@ -818,36 +815,48 @@ void rotator() {
 void explore() {
   stop();
 
-  _explore_step = 0;
+  _explorer_step = 0;
   
-  explore_timer.attach_ms(EXPLORE_SAMPLE_RATE, exploreLoop);
+  explore_timer.attach_ms(EXPLORE_SAMPLE_RATE, explorer);
 }
 
 /**
  * Control loop to explore the environment.
  */
-void exploreLoop() {
-  if (!_scanning && !_moving && !_rotating) {
-    if (_explore_step == 0) {
-      scan();
+void explorer() {
+  if (!scan_timer.active() && !mover_timer.active() && !rotator_timer.active()) {
+    switch (_explorer_step) {
+      case 0: {
+        scan();
         
-      _explore_step = 1;
-    } else if (_explore_step == 1) {
-      uint8_t index = randomWeightedIndex(_distances_to_object, NUM_SCANS);
+        _explorer_step = 1;
+      }
+      
+      break;
 
-      float delta = calculateYawDelta(_yaw, _scan_angles[index]);
+      case 1: {
+        uint8_t index = randomWeightedIndex(_distances_to_object, NUM_SCANS);
 
-      if (delta < 0.0) {
-        rotateLeft(delta);
-      } else {
-        rotateRight(delta);
+        float delta = calculateYawDelta(_yaw, _scan_angles[index]);
+
+        if (delta < 0.0) {
+          rotateLeft(fabs(delta));
+        } else {
+          rotateRight(delta);
+        }
+
+        _explorer_step = 2;
+      }
+      
+      break;
+        
+      case 2: {
+        move(2000);
+
+        _explorer_step = 0;
       }
 
-      _explore_step = 2;
-    } else if (_explore_step == 2) {
-      move(2000);
-
-      _explore_step = 0;
+      break;
     }
   }
 }
@@ -856,8 +865,6 @@ void exploreLoop() {
  * Move the robot forward.
  */
 void move(unsigned long duration) {
-  _moving = true;
-
   forward();
 
   mover_timer.once_ms(duration, stopMoving);
@@ -867,9 +874,11 @@ void move(unsigned long duration) {
  * Stop moving.
  */
 void stopMoving() {
-  _moving = false;
-
   brake();
+
+  stabilizer_timer.detach();
+  collision_timer.detach();
+  mover_timer.detach();
 }
 
 /**
@@ -879,7 +888,6 @@ void scan() {
   rotateRight(0.5 * SCAN_WINDOW);
     
   _scan_count = 0;
-  _scanning = true;
 
   scan_timer.attach_ms(SCAN_SAMPLE_RATE, scanLoop);
 }
@@ -888,8 +896,8 @@ void scan() {
  * Control loop to scan the environment for objects.
  */
 void scanLoop() {
-  if (!_rotating) {
-    uint16_t distance;
+  if (!rotator_timer.active()) {
+    int distance;
     
     switch (lidar.ranging_data.range_status) {
       case LIDAR_RANGE_VALID:
@@ -909,7 +917,9 @@ void scanLoop() {
         break;
     }
 
-    _distances_to_object[_scan_count] = distance + LIDAR_SENSOR_OFFSET;
+    distance += LIDAR_SENSOR_OFFSET;
+
+    _distances_to_object[_scan_count] = max(0, distance);
     _scan_angles[_scan_count] = _yaw;
    
     _scan_count++;
@@ -917,8 +927,6 @@ void scanLoop() {
     if (_scan_count < NUM_SCANS) {
       rotateLeft(SCAN_WINDOW / (NUM_SCANS - 1));
     } else {
-      _scanning = false;
-      
       scan_timer.detach();
     }
   }
@@ -1089,7 +1097,7 @@ void updateBattery() {
 
   _battery_voltage = (raw / VOLTMETER_RESOLUTION) * MAX_VOLTAGE;
 
-  if (_battery_voltage > 0 && _battery_voltage < MIN_VOLTAGE) {
+  if (_battery_voltage > EPSILON && _battery_voltage < MIN_VOLTAGE) {
     stop();
     
     beep(4);
@@ -1179,19 +1187,21 @@ float calculateYawDelta(float current, float target) {
  * Samples a random weighted index.
  */
 uint8_t randomWeightedIndex(uint16_t weights[], uint8_t n) {
-  unsigned long sigma = 0;
+  uint8_t index;
+  
+  long sigma = 0;
 
-  for (uint8_t i = 0; i < n; i++) {
-    sigma += weights[i];
+  for (index = 0; index < n; index++) {
+    sigma += weights[index];
   }
  
-  unsigned long delta = random(0, sigma);
+  long delta = random(sigma);
   
-  for (uint8_t i = 0; i < n; i++) {
-    delta -= weights[i];
+  for (index = 0; index < n; index++) {
+    delta -= weights[index];
 
     if (delta <= 0) {
-      return i;
+      return index;
     }
   }
 
