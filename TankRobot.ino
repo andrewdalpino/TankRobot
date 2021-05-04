@@ -12,8 +12,8 @@
 #define SERIAL_BAUD 9600
 
 #define BEEPER_PIN D7
-#define BEEP_DURATION 120
-#define BEEP_DELAY 40
+#define BEEP_DURATION 100
+#define BEEP_DELAY 30
 
 #define AP_SSID "TankRobot"
 #define AP_PASSWORD "KeepSummerSafe"
@@ -97,7 +97,7 @@
 
 #define MOVER_SAMPLE_RATE LIDAR_SAMPLE_RATE
 #define MOVER_BURN_OVERSHOOT 1.2
-#define MOVER_WEIGHT_INIT_MAX 0.86
+#define MOVER_NUM_FEATURES 4
 #define MOVER_LEARNING_RATE 0.05
 #define MOVER_MOMENTUM_DECAY 0.1
 #define MOVER_NORM_DECAY 0.001
@@ -159,7 +159,7 @@ Ticker stabilizer_timer;
 VL53L1X lidar;
 
 float _scan_angles[NUM_SCANS];
-long _distances_to_object[NUM_SCANS];
+int _distances_to_object[NUM_SCANS];
 uint8_t _scan_count;
 
 Ticker scan_timer, collision_timer;
@@ -168,11 +168,12 @@ uint8_t _explorer_step;
 
 Ticker explore_timer;
 
+float _mover_prediction;
 long _mover_target_timestamp;
-float _mover_features[4];
-float _mover_weights[4];
-float _mover_velocities[4];
-float _mover_norms[4];
+float _mover_features[MOVER_NUM_FEATURES];
+float _mover_weights[MOVER_NUM_FEATURES];
+float _mover_velocities[MOVER_NUM_FEATURES];
+float _mover_norms[MOVER_NUM_FEATURES];
 float _mover_bias;
 
 /**
@@ -407,7 +408,6 @@ void setupMPU() {
 
   gravity_timer.attach_ms(GRAVITY_SAMPLE_RATE, updateGravity);
   orientation_timer.attach_ms(ORIENTATION_SAMPLE_RATE, updateOrientation);
-  acceleration_timer.attach_ms(ACCEL_SAMPLE_RATE, updateAcceleration);
   temperature_timer.attach_ms(TEMPERATURE_SAMPLE_RATE, updateTemperature);
 
   Serial.println("DMP initialized");
@@ -445,8 +445,10 @@ void setupRandom() {
  * Set up the mover model.
  */
 void setupMover() {
-  for (uint8_t i = 0; i < 4; i++) {
-    _mover_weights[i] = MOVER_WEIGHT_INIT_MAX * random(-MAX_RAND_INT, MAX_RAND_INT) / MAX_RAND_INT;
+  float scale = sqrt(3.0 / MOVER_NUM_FEATURES);
+  
+  for (uint8_t i = 0; i < MOVER_NUM_FEATURES; i++) {
+    _mover_weights[i] = scale * random(-MAX_RAND_INT, MAX_RAND_INT) / MAX_RAND_INT;
   }
   
   Serial.println("Mover model initialized");
@@ -727,9 +729,7 @@ void stop() {
   disableCollisionDetection();
   disableStabilizer();
   disableRolloverDetection();
-    
-  mover_timer.detach();
-  rotator_timer.detach();
+
   explore_timer.detach();
 }
 
@@ -940,7 +940,7 @@ void choosePath() {
   float scale = 1.0 / PATH_EXPLOITATION_DEGREE;
   
   for (uint8_t i = 0; i < NUM_SCANS; i++) {
-    weights[i] = (long) round(scale * pow(_distances_to_object[i], PATH_EXPLOITATION_DEGREE));
+    weights[i] = round(scale * pow(_distances_to_object[i], PATH_EXPLOITATION_DEGREE));
   }
   
   long sigma = 0;
@@ -975,59 +975,55 @@ void move() {
   _mover_features[2] = _pitch / HALF_PI;
   _mover_features[3] = distanceToObject() / LIDAR_MAX_RANGE;
 
-  float sigma = 0.0;
+  float delta = 0.0;
 
-  for (uint8_t i = 0; i < 4; i++) {
-    sigma += _mover_features[i] * _mover_weights[i];
+  for (uint8_t i = 0; i < MOVER_NUM_FEATURES; i++) {
+    delta += _mover_features[i] * _mover_weights[i];
   }
 
-  sigma += _mover_bias;
+  delta += _mover_bias;
 
-  long now = millis();
+  _mover_prediction = delta;
 
-  _mover_target_timestamp = now + (long) round(fmax(0.0, sigma));
+  _mover_target_timestamp = millis() + fmax(0.0, round(delta));
 
- _direction = FORWARD;
+  _direction = FORWARD;
 
   mover_timer.attach_ms(MOVER_SAMPLE_RATE, mover);
 
   enableStabilizer();
-  enableRolloverDetection();
 
   digitalWrite(MOTOR_A_DIRECTION_PIN, FORWARD);
   digitalWrite(MOTOR_B_DIRECTION_PIN, FORWARD);
 
-  analogWrite(MOTOR_A_THROTTLE_PIN, _throttle);
-  analogWrite(MOTOR_B_THROTTLE_PIN, _throttle);
+  go();
 }
 
 /**
  * Control loop to displace the vehicle in the x axis.
  */
 void mover() {
-  long distance = distanceToObject();
-  
   long now = millis();
 
-  long end_timestamp = (long) round(MOVER_BURN_OVERSHOOT * _mover_target_timestamp);
+  long end_timestamp = round(MOVER_BURN_OVERSHOOT * _mover_target_timestamp);
 
-  if (distance < COLLISION_THRESHOLD || now > end_timestamp) {
-    brake();
-
+  if (now > end_timestamp || distanceToObject() < COLLISION_THRESHOLD) {
     disableStabilizer();
     disableRolloverDetection();
 
-    float dydl = _mover_target_timestamp - now;
+    brake();
+
+    float dydl = _mover_prediction - now;
 
     float gradient;
 
-    for (uint8_t i = 0; i < 4; i++) {
+    for (uint8_t i = 0; i < MOVER_NUM_FEATURES; i++) {
       gradient = dydl * _mover_features[i] + MOVER_ALPHA * _mover_weights[i];
 
       _mover_velocities[i] = gradient * MOVER_MOMENTUM_DECAY + _mover_velocities[i] * (1.0 - MOVER_MOMENTUM_DECAY);
-
-      _mover_norms[i] = pow(gradient, 2.0) * MOVER_NORM_DECAY + _mover_norms[i] * (1.0 - MOVER_NORM_DECAY);
-
+      
+      _mover_norms[i] = sq(gradient) * MOVER_NORM_DECAY + _mover_norms[i] * (1.0 - MOVER_NORM_DECAY);
+      
       _mover_weights[i] -= (_mover_velocities[i] * MOVER_LEARNING_RATE) / sqrt(_mover_norms[i]);
     }
 
@@ -1074,17 +1070,19 @@ void stabilize() {
 
   float beta = min(fabs(theta) / M_PI, 1.0);
 
-  unsigned int backoff_throttle = max(MIN_THROTTLE, (int) round((1.0 - beta) * _throttle));
+  int backoff_throttle = max(MIN_THROTTLE, (int) round((1.0 - beta) * _throttle));
 
-  if (delta < 0.0) {
+  if (theta < 0.0) {
     switch (_direction) {
       case FORWARD:
+        analogWrite(MOTOR_A_THROTTLE_PIN, _throttle);
         analogWrite(MOTOR_B_THROTTLE_PIN, backoff_throttle);
         
         break;
     
       case REVERSE:
         analogWrite(MOTOR_A_THROTTLE_PIN, backoff_throttle);
+        analogWrite(MOTOR_B_THROTTLE_PIN, _throttle);
         
         break;
     }
@@ -1092,15 +1090,19 @@ void stabilize() {
     switch (_direction) {
       case FORWARD:
         analogWrite(MOTOR_A_THROTTLE_PIN, backoff_throttle);
+        analogWrite(MOTOR_B_THROTTLE_PIN, _throttle);
         
         break;
     
       case REVERSE:
+        analogWrite(MOTOR_A_THROTTLE_PIN, _throttle);
         analogWrite(MOTOR_B_THROTTLE_PIN, backoff_throttle);
             
         break;
     }
   }
+
+  _stabilizer_prev_delta = delta;
 }
 
 /**
@@ -1124,12 +1126,10 @@ void detectCollision() {
   StaticJsonDocument<64> doc;
   char buffer[64];
   
-  long distance = distanceToObject();
+  int distance = distanceToObject();
   
   if (distance < COLLISION_THRESHOLD) {
     brake();
-
-    beep(1);
 
     doc["distance"] = distance;
   
@@ -1248,16 +1248,16 @@ void silenceBeeper(uint8_t remaining) {
 void updateGravity() {
   _gravity.x = -2.0 * (_q.x * _q.z - _q.w * _q.y);
   _gravity.y = 2.0 * (_q.w * _q.x + _q.y * _q.z);
-  _gravity.z = -(pow(_q.w, 2) - pow(_q.x, 2) - pow(_q.y, 2) + pow(_q.z, 2));
+  _gravity.z = -(sq(_q.w) - sq(_q.x) -sq(_q.y) + sq(_q.z));
 }
 
 /**
  * Calculate the current yaw, pitch, and roll from the raw quaternion and gravity vector.
  */
 void updateOrientation() {
-  _yaw = atan2(2.0 * -_q.x * _q.y - 2.0 * _q.w * -_q.z, 2.0 * pow(_q.w, 2) + 2.0 * pow(_q.x, 2) - 1.0);
+  _yaw = atan2(2.0 * -_q.x * _q.y - 2.0 * _q.w * -_q.z, 2.0 * sq(_q.w) + 2.0 * sq(_q.x) - 1.0);
   
-  _pitch = atan2(_gravity.x, sqrt(pow(_gravity.y, 2) + pow(_gravity.z, 2)));
+  _pitch = atan2(_gravity.x, sqrt(sq(_gravity.y) + sq(_gravity.z)));
   
   _roll = atan2(_gravity.y, _gravity.z);
 }
@@ -1272,10 +1272,10 @@ void updateAcceleration() {
 }
 
 /**
- * Return the distance to object;
+ * Return the distance to object using the narrow beam.
  */
-long distanceToObject() {
-  long distance;
+int distanceToObject() {
+  int distance;
     
   switch (lidar.ranging_data.range_status) {
     case LIDAR_RANGE_VALID:
@@ -1297,12 +1297,11 @@ long distanceToObject() {
 
   distance += LIDAR_SENSOR_OFFSET;
 
-  return distance;
+  return max(0, distance);
 }
 
 /**
- * Calculate the final angle of a rotation from a starting point with the addition of delta
- * in radians.
+ * Calculate the final angle of a rotation from a starting point with the addition of delta in radians.
  */
 float calculateTargetAngle(float start, float delta) {
   float end = start + delta;
