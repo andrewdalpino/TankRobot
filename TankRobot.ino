@@ -93,15 +93,15 @@
 #define SCAN_WINDOW M_PI
 #define NUM_SCANS 5
 
-#define PATH_EXPLOITATION_DEGREE 2.0
+#define PATH_AFFINITY 2.0
 
-#define MOVER_SAMPLE_RATE LIDAR_SAMPLE_RATE
+#define MOVER_SAMPLE_RATE 50
 #define MOVER_BURN_OVERSHOOT 1.2
 #define MOVER_NUM_FEATURES 4
-#define MOVER_LEARNING_RATE 0.05
+#define MOVER_LEARNING_RATE 0.01
 #define MOVER_MOMENTUM_DECAY 0.1
 #define MOVER_NORM_DECAY 0.001
-#define MOVER_ALPHA 1e-3
+#define MOVER_ALPHA 1e-4
 
 #define COLLISION_SAMPLE_RATE LIDAR_SAMPLE_RATE
 #define COLLISION_THRESHOLD 400
@@ -146,15 +146,10 @@ volatile bool _dmp_ready = false;
 Ticker gravity_timer, orientation_timer, acceleration_timer;
 Ticker temperature_timer, rollover_timer;
 
-Ticker mover_timer;
-
 float _rotator_prev_delta, _rotator_delta_integral;
-
-Ticker rotator_timer;
-
 float _stabilizer_prev_delta, _stabilizer_delta_integral;
 
-Ticker stabilizer_timer;
+Ticker rotator_timer, stabilizer_timer;
 
 VL53L1X lidar;
 
@@ -164,17 +159,19 @@ uint8_t _scan_count;
 
 Ticker scan_timer, collision_timer;
 
+float _mover_prediction;
+long _mover_target_timestamp, _mover_end_timestamp;
+float _mover_features[MOVER_NUM_FEATURES];
+float _mover_weights[MOVER_NUM_FEATURES];
+float _mover_weight_velocities[MOVER_NUM_FEATURES];
+float _mover_weight_norms[MOVER_NUM_FEATURES];
+float _mover_bias;
+
+Ticker mover_timer;
+
 uint8_t _explorer_step;
 
 Ticker explore_timer;
-
-float _mover_prediction;
-long _mover_target_timestamp;
-float _mover_features[MOVER_NUM_FEATURES];
-float _mover_weights[MOVER_NUM_FEATURES];
-float _mover_velocities[MOVER_NUM_FEATURES];
-float _mover_norms[MOVER_NUM_FEATURES];
-float _mover_bias;
 
 /**
  * Bootstrap routine to setup the robot.
@@ -742,6 +739,13 @@ void brake() {
 }
 
 /**
+ * Returns the battery voltage as a percentage.
+ */
+int batteryPercentage() {
+  return map(_battery_voltage, MIN_VOLTAGE, MAX_VOLTAGE, 0, 100);
+}
+
+/**
  * Returns the throttle position as a percentage.
  */
 int throttlePercentage() {
@@ -851,14 +855,6 @@ void rotator() {
 }
 
 /**
- * Returns the battery voltage as a percentage.
- */
-int batteryPercentage() {
-  return map(_battery_voltage, MIN_VOLTAGE, MAX_VOLTAGE, 0, 100);
-}
-
-
-/**
  * Kick off the explore loop.
  */
 void explore() {
@@ -936,11 +932,9 @@ void scanner() {
  */
 void choosePath() {
   long weights[NUM_SCANS];
-
-  float scale = 1.0 / PATH_EXPLOITATION_DEGREE;
   
   for (uint8_t i = 0; i < NUM_SCANS; i++) {
-    weights[i] = round(scale * pow(_distances_to_object[i], PATH_EXPLOITATION_DEGREE));
+    weights[i] = round(pow(_distances_to_object[i], PATH_AFFINITY));
   }
   
   long sigma = 0;
@@ -986,6 +980,8 @@ void move() {
   _mover_prediction = delta;
 
   _mover_target_timestamp = millis() + fmax(0.0, round(delta));
+  
+  _mover_end_timestamp = round(MOVER_BURN_OVERSHOOT * _mover_target_timestamp);
 
   _direction = FORWARD;
 
@@ -1005,26 +1001,29 @@ void move() {
 void mover() {
   long now = millis();
 
-  long end_timestamp = round(MOVER_BURN_OVERSHOOT * _mover_target_timestamp);
+  if (now > _mover_end_timestamp || distanceToObject() < COLLISION_THRESHOLD) {
+    brake();
 
-  if (now > end_timestamp || distanceToObject() < COLLISION_THRESHOLD) {
     disableStabilizer();
     disableRolloverDetection();
-
-    brake();
 
     float dydl = _mover_prediction - now;
 
     float gradient;
 
     for (uint8_t i = 0; i < MOVER_NUM_FEATURES; i++) {
-      gradient = dydl * _mover_features[i] + MOVER_ALPHA * _mover_weights[i];
+      gradient = dydl * _mover_features[i];
+      
+      gradient += MOVER_ALPHA * _mover_weights[i];
 
-      _mover_velocities[i] = gradient * MOVER_MOMENTUM_DECAY + _mover_velocities[i] * (1.0 - MOVER_MOMENTUM_DECAY);
+      _mover_weight_velocities[i] = gradient * MOVER_MOMENTUM_DECAY
+        + _mover_weight_velocities[i] * (1.0 - MOVER_MOMENTUM_DECAY);
       
-      _mover_norms[i] = sq(gradient) * MOVER_NORM_DECAY + _mover_norms[i] * (1.0 - MOVER_NORM_DECAY);
+      _mover_weight_norms[i] = sq(gradient) * MOVER_NORM_DECAY
+        + _mover_weight_norms[i] * (1.0 - MOVER_NORM_DECAY);
       
-      _mover_weights[i] -= (_mover_velocities[i] * MOVER_LEARNING_RATE) / sqrt(_mover_norms[i]);
+      _mover_weights[i] -= (_mover_weight_velocities[i] * MOVER_LEARNING_RATE)
+        / sqrt(_mover_weight_norms[i]);
     }
 
     _mover_bias -= MOVER_LEARNING_RATE * dydl;
