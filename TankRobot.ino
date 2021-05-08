@@ -85,8 +85,6 @@
 #define LIDAR_SIGNAL_FAILURE 2
 #define LIDAR_PHASE_OUT_OF_BOUNDS 4
 
-#define MAX_RAND_INT 2147483647
-
 #define EXPLORE_SAMPLE_RATE 500
 
 #define SCAN_SAMPLE_RATE 250
@@ -109,6 +107,7 @@
 #define ROLLOVER_SAMPLE_RATE 500
 #define ROLLOVER_THRESHOLD HALF_PI
 
+#define MAX_RAND_INT 2147483647
 #define EPSILON 1e-8
 
 Ticker beep_timer;
@@ -162,10 +161,9 @@ Ticker scan_timer, collision_timer;
 float _mover_prediction;
 long _mover_target_timestamp, _mover_end_timestamp;
 float _mover_features[MOVER_NUM_FEATURES];
-float _mover_weights[MOVER_NUM_FEATURES];
-float _mover_weight_velocities[MOVER_NUM_FEATURES];
-float _mover_weight_norms[MOVER_NUM_FEATURES];
-float _mover_bias;
+float _mover_weights[MOVER_NUM_FEATURES], _mover_bias;
+float _mover_weight_velocities[MOVER_NUM_FEATURES], _mover_bias_velocity;
+float _mover_weight_norms[MOVER_NUM_FEATURES], _mover_bias_norm;
 
 Ticker mover_timer;
 
@@ -810,7 +808,7 @@ void rotate(float radians) {
  * Control loop to rotate the vehicle by actuating the motors.
  */
 void rotator() {
-  float delta = calculateYawDelta(_yaw, _yaw_lock);
+  float delta = calculateAngleDelta(_yaw, _yaw_lock);
 
   _rotator_delta_integral += 0.5 * (delta + _rotator_prev_delta);
 
@@ -951,7 +949,7 @@ void choosePath() {
     rho -= weights[i];
 
     if (rho <= 0) {
-      delta = calculateYawDelta(_yaw, _scan_angles[i]);
+      delta = calculateAngleDelta(_yaw, _scan_angles[i]);
             
       break;
     }
@@ -1007,6 +1005,8 @@ void mover() {
     disableStabilizer();
     disableRolloverDetection();
 
+    mover_timer.detach();
+
     float dydl = _mover_prediction - now;
 
     float gradient;
@@ -1022,13 +1022,18 @@ void mover() {
       _mover_weight_norms[i] = sq(gradient) * MOVER_NORM_DECAY
         + _mover_weight_norms[i] * (1.0 - MOVER_NORM_DECAY);
       
-      _mover_weights[i] -= (_mover_weight_velocities[i] * MOVER_LEARNING_RATE)
+      _mover_weights[i] -= (MOVER_LEARNING_RATE * _mover_weight_velocities[i])
         / sqrt(_mover_weight_norms[i]);
     }
 
-    _mover_bias -= MOVER_LEARNING_RATE * dydl;
+    _mover_bias_velocity = dydl * MOVER_MOMENTUM_DECAY
+      + _mover_bias_velocity * (1.0 - MOVER_MOMENTUM_DECAY);
 
-    mover_timer.detach();
+    _mover_bias_norm = sq(dydl) * MOVER_NORM_DECAY
+      + _mover_bias_norm * (1.0 - MOVER_NORM_DECAY);
+
+    _mover_bias -= (MOVER_LEARNING_RATE * _mover_bias_velocity)
+      / sqrt(_mover_bias_norm);
   }
 }
 
@@ -1055,7 +1060,7 @@ void disableStabilizer() {
  * Stabilize linear movement using orientation feedback from the gyroscope.
  */
 void stabilize() {
-  float delta = calculateYawDelta(_yaw, _yaw_lock);
+  float delta = calculateAngleDelta(_yaw, _yaw_lock);
 
   _stabilizer_delta_integral += 0.5 * (delta + _stabilizer_prev_delta);
 
@@ -1303,33 +1308,29 @@ int distanceToObject() {
  * Calculate the final angle of a rotation from a starting point with the addition of delta in radians.
  */
 float calculateTargetAngle(float start, float delta) {
-  float end = start + delta;
+  float target = start + delta;
   
-  if (end > M_PI) {
-    end -= TWO_PI;
-  } else if (end < -M_PI) {
-    end += TWO_PI;
+  if (target > M_PI) {
+    target -= TWO_PI;
+  } else if (target < -M_PI) {
+    target += TWO_PI;
   }
 
-  return end;
+  return target;
 }
 
 /**
  * Calculate the difference between a target and the current yaw.
  */
-float calculateYawDelta(float current, float target) {
-  float delta = target - current;
+float calculateAngleDelta(float start, float target) {
+  float delta = target - start;
 
   if (fabs(delta) > M_PI) {
-    float adjusted_yaw;
-    
-    if (current > 0.0) {
-      adjusted_yaw = current - TWO_PI;
+    if (start > 0.0) {
+      delta = target - (start - TWO_PI);
     } else {
-      adjusted_yaw = current + TWO_PI;
+      delta = target - (start + TWO_PI);
     }
-
-    delta = target - adjusted_yaw;
   }
 
   return delta;
