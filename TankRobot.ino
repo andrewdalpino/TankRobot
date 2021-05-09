@@ -53,10 +53,10 @@
 #define MPU_INTERRUPT_PIN 10
 #define MPU_MAX_FIFO_COUNT 1024
 #define LOW_PASS_FILTER_MODE 3
-#define GYRO_CALIBRATION_LOOPS 6
+#define GYRO_CALIBRATION_LOOPS 8
 #define GRAVITY_SAMPLE_RATE 10
-#define ORIENTATION_SAMPLE_RATE GRAVITY_SAMPLE_RATE
-#define ACCEL_CALIBRATION_LOOPS 6
+#define ORIENTATION_SAMPLE_RATE 10
+#define ACCEL_CALIBRATION_LOOPS 8
 #define ACCEL_SAMPLE_RATE 10
 #define ACCEL_LSB_PER_G 16384.0
 #define TEMPERATURE_SAMPLE_RATE 1000
@@ -89,14 +89,14 @@
 
 #define SCAN_SAMPLE_RATE 250
 #define SCAN_WINDOW M_PI
-#define NUM_SCANS 5
+#define NUM_SCANS 4
 
 #define PATH_AFFINITY 2.0
 
-#define MOVER_SAMPLE_RATE 50
-#define MOVER_BURN_OVERSHOOT 1.2
+#define MOVER_SAMPLE_RATE LIDAR_SAMPLE_RATE
+#define MOVER_MAX_OVERSHOOT 0.33
 #define MOVER_NUM_FEATURES 4
-#define MOVER_LEARNING_RATE 0.01
+#define MOVER_LEARNING_RATE 10.0
 #define MOVER_MOMENTUM_DECAY 0.1
 #define MOVER_NORM_DECAY 0.001
 #define MOVER_ALPHA 1e-4
@@ -108,7 +108,6 @@
 #define ROLLOVER_THRESHOLD HALF_PI
 
 #define MAX_RAND_INT 2147483647
-#define EPSILON 1e-8
 
 Ticker beep_timer;
 
@@ -135,8 +134,8 @@ Quaternion _q;
 VectorInt16 _aa;
 VectorFloat _gravity;
 VectorFloat _acceleration;
-float _yaw, _pitch, _roll;
-float _yaw_lock, _temperature;
+float _heading, _pitch, _roll;
+float _heading_lock, _temperature;
 uint8_t _dmp_fifo_buffer[64];
 uint16_t _dmp_packet_size;
 void ICACHE_RAM_ATTR dmpDataReady();
@@ -159,48 +158,21 @@ uint8_t _scan_count;
 Ticker scan_timer, collision_timer;
 
 float _mover_prediction;
-long _mover_target_timestamp, _mover_end_timestamp;
+long _mover_target_timestamp;
+long _mover_start_timestamp, _mover_end_timestamp;
 float _mover_features[MOVER_NUM_FEATURES];
-float _mover_weights[MOVER_NUM_FEATURES], _mover_bias;
-float _mover_weight_velocities[MOVER_NUM_FEATURES], _mover_bias_velocity;
-float _mover_weight_norms[MOVER_NUM_FEATURES], _mover_bias_norm;
+float _mover_weights[MOVER_NUM_FEATURES];
+float _mover_weight_velocities[MOVER_NUM_FEATURES];
+float _mover_weight_norms[MOVER_NUM_FEATURES];
+float _mover_bias;
+float _mover_bias_velocity;
+float _mover_bias_norm;
 
 Ticker mover_timer;
 
 uint8_t _explorer_step;
 
 Ticker explore_timer;
-
-/**
- * Bootstrap routine to setup the robot.
- */
-void setup() {    
-  setupSerial();
-
-  setupBeeper();
-
-  setupCPU();
-  setupROM();
-  
-  setupSPIFFS();
-
-  setupAccessPoint();
-  setupHttpServer();
-
-  setupBattery();
-  
-  setupMotors();
-
-  setupI2C();
-  setupMPU();
-  setupLidar();
-
-  setupRandom();
-
-  setupMover();
-
-  Serial.println("Ready!");
-}
 
 /**
  * Set up the serial interface.
@@ -431,7 +403,9 @@ void setupLidar() {
  * Set up the random number generator.
  */
 void setupRandom() {
-  randomSeed(analogRead(BATTERY_PIN));
+  unsigned long seed = analogRead(BATTERY_PIN) + abs(mpu.getTemperature());
+  
+  randomSeed(seed);
   
   Serial.println("Seeded random number generator");
 }
@@ -440,17 +414,46 @@ void setupRandom() {
  * Set up the mover model.
  */
 void setupMover() {
-  float scale = sqrt(3.0 / MOVER_NUM_FEATURES);
-  
   for (uint8_t i = 0; i < MOVER_NUM_FEATURES; i++) {
-    _mover_weights[i] = scale * random(-MAX_RAND_INT, MAX_RAND_INT) / MAX_RAND_INT;
+    _mover_weights[i] = random(-MAX_RAND_INT, MAX_RAND_INT) / MAX_RAND_INT;
   }
   
   Serial.println("Mover model initialized");
 }
 
 /**
- * Main event loop.
+ * Bootstrap the robot.
+ */
+void setup() {    
+  setupSerial();
+
+  setupBeeper();
+
+  setupCPU();
+  setupROM();
+  
+  setupSPIFFS();
+
+  setupAccessPoint();
+  setupHttpServer();
+
+  setupBattery();
+  
+  setupMotors();
+
+  setupI2C();
+  setupMPU();
+  setupLidar();
+
+  setupRandom();
+
+  setupMover();
+
+  Serial.println("Ready");
+}
+
+/**
+ * The main event loop.
  */
 void loop() {
   if (lidar.dataReady()) {
@@ -461,6 +464,7 @@ void loop() {
     
   if (_dmp_ready) {
     uint8_t mpu_int_status = mpu.getIntStatus();
+    
     uint16_t fifo_count = mpu.getFIFOCount();
 
     if (mpu_int_status & 0x10 || fifo_count >= MPU_MAX_FIFO_COUNT) {
@@ -481,12 +485,6 @@ void loop() {
 
     _dmp_ready = false;
   }
-
-//  Serial.print(_acceleration.x, 4);
-//  Serial.print("\t");
-//  Serial.print(_acceleration.y, 4);
-//  Serial.print("\t");
-//  Serial.println(_acceleration.z, 4);
 }
 
 /**
@@ -506,7 +504,11 @@ int handleGetRobot(AsyncWebServerRequest *request) {
 
   JsonObject sensors = robot.createNestedObject("sensors");
 
-  sensors["voltage"] = _battery_voltage;
+  JsonObject battery = sensors.createNestedObject("battery");
+
+  battery["voltage"] = _battery_voltage;
+  battery["percentage"] = batteryPercentage();
+  
   sensors["temperature"] = _temperature;
 
   JsonObject features = robot.createNestedObject("features");
@@ -720,11 +722,7 @@ void stop() {
   brake();
 
   _stopped = true;
-
-  disableCollisionDetection();
-  disableStabilizer();
-  disableRolloverDetection();
-
+  
   explore_timer.detach();
 }
 
@@ -734,6 +732,10 @@ void stop() {
 void brake() {
   analogWrite(MOTOR_A_THROTTLE_PIN, 0);
   analogWrite(MOTOR_B_THROTTLE_PIN, 0);
+
+  disableCollisionDetection();
+  disableStabilizer();
+  disableRolloverDetection();
 }
 
 /**
@@ -796,7 +798,7 @@ void rotateRight(float radians) {
 void rotate(float radians) {
   radians = constrain(radians, -M_PI, M_PI);
     
-  _yaw_lock = calculateTargetAngle(_yaw, radians);
+  _heading_lock = calculateTargetAngle(_heading, radians);
 
   _rotator_delta_integral = 0.0;
   _rotator_prev_delta = 0.0;
@@ -808,7 +810,7 @@ void rotate(float radians) {
  * Control loop to rotate the vehicle by actuating the motors.
  */
 void rotator() {
-  float delta = calculateAngleDelta(_yaw, _yaw_lock);
+  float delta = calculateAngleDelta(_heading, _heading_lock);
 
   _rotator_delta_integral += 0.5 * (delta + _rotator_prev_delta);
 
@@ -913,7 +915,8 @@ void scanEnvironment() {
 void scanner() {
   if (!rotator_timer.active()) {
     _distances_to_object[_scan_count] = distanceToObject();
-    _scan_angles[_scan_count] = _yaw;
+    
+    _scan_angles[_scan_count] = _heading;
    
     _scan_count++;
     
@@ -949,7 +952,7 @@ void choosePath() {
     rho -= weights[i];
 
     if (rho <= 0) {
-      delta = calculateAngleDelta(_yaw, _scan_angles[i]);
+      delta = calculateAngleDelta(_heading, _scan_angles[i]);
             
       break;
     }
@@ -975,11 +978,17 @@ void move() {
 
   delta += _mover_bias;
 
+  long now = millis();
+
   _mover_prediction = delta;
 
-  _mover_target_timestamp = millis() + fmax(0.0, round(delta));
+  _mover_start_timestamp = now;
   
-  _mover_end_timestamp = round(MOVER_BURN_OVERSHOOT * _mover_target_timestamp);
+  _mover_target_timestamp = now + fmax(0.0, round(delta));
+
+  long overshoot = random(0, (long) round(MOVER_MAX_OVERSHOOT * delta));
+  
+  _mover_end_timestamp = _mover_target_timestamp + overshoot;
 
   _direction = FORWARD;
 
@@ -1002,24 +1011,21 @@ void mover() {
   if (now > _mover_end_timestamp || distanceToObject() < COLLISION_THRESHOLD) {
     brake();
 
-    disableStabilizer();
-    disableRolloverDetection();
+    float delta = now - _mover_start_timestamp;
 
-    mover_timer.detach();
+    float dydl = _mover_prediction - delta;
 
-    float dydl = _mover_prediction - now;
-
-    float gradient;
+    float dydw;
 
     for (uint8_t i = 0; i < MOVER_NUM_FEATURES; i++) {
-      gradient = dydl * _mover_features[i];
+      dydw = dydl * _mover_features[i];
       
-      gradient += MOVER_ALPHA * _mover_weights[i];
+      dydw += MOVER_ALPHA * _mover_weights[i];
 
-      _mover_weight_velocities[i] = gradient * MOVER_MOMENTUM_DECAY
+      _mover_weight_velocities[i] = dydw * MOVER_MOMENTUM_DECAY
         + _mover_weight_velocities[i] * (1.0 - MOVER_MOMENTUM_DECAY);
       
-      _mover_weight_norms[i] = sq(gradient) * MOVER_NORM_DECAY
+      _mover_weight_norms[i] = sq(dydw) * MOVER_NORM_DECAY
         + _mover_weight_norms[i] * (1.0 - MOVER_NORM_DECAY);
       
       _mover_weights[i] -= (MOVER_LEARNING_RATE * _mover_weight_velocities[i])
@@ -1035,13 +1041,15 @@ void mover() {
     _mover_bias -= (MOVER_LEARNING_RATE * _mover_bias_velocity)
       / sqrt(_mover_bias_norm);
   }
+
+  mover_timer.detach();
 }
 
 /**
  * Enable linear movement stabilizer.
  */
 void enableStabilizer() {
-  _yaw_lock = _yaw;
+  _heading_lock = _heading;
   
   _stabilizer_delta_integral = 0.0;
   _stabilizer_prev_delta = 0.0;
@@ -1060,7 +1068,7 @@ void disableStabilizer() {
  * Stabilize linear movement using orientation feedback from the gyroscope.
  */
 void stabilize() {
-  float delta = calculateAngleDelta(_yaw, _yaw_lock);
+  float delta = calculateAngleDelta(_heading, _heading_lock);
 
   _stabilizer_delta_integral += 0.5 * (delta + _stabilizer_prev_delta);
 
@@ -1110,6 +1118,33 @@ void stabilize() {
 }
 
 /**
+ * Enable rollover detection.
+ */
+void enableRolloverDetection() {
+  rollover_timer.attach_ms(ROLLOVER_SAMPLE_RATE, detectRollover);
+}
+
+/**
+ * Disable rollover detection.
+ */
+void disableRolloverDetection() {
+  rollover_timer.detach();
+}
+
+/**
+ * Detect if the vehicle has rolled over.
+ */
+void detectRollover() {
+  if (fabs(_pitch) > ROLLOVER_THRESHOLD || fabs(_roll) > ROLLOVER_THRESHOLD) {
+    stop();
+
+    beep(4);
+
+    malfunction_emitter.send("", "rollover-detected");
+  }
+}
+
+/**
  * Enable collision detection.
  */
 void enableCollisionDetection() {
@@ -1144,41 +1179,6 @@ void detectCollision() {
 }
 
 /**
- * Enable rollover detection.
- */
-void enableRolloverDetection() {
-  rollover_timer.attach_ms(ROLLOVER_SAMPLE_RATE, detectRollover);
-}
-
-/**
- * Disable rollover detection.
- */
-void disableRolloverDetection() {
-  rollover_timer.detach();
-}
-
-/**
- * Detect if the vehicle has rolled over.
- */
-void detectRollover() {
-  StaticJsonDocument<64> doc;
-  char buffer[64];
-      
-  if (fabs(_pitch) > ROLLOVER_THRESHOLD || fabs(_roll) > ROLLOVER_THRESHOLD) {
-    stop();
-
-    beep(4);
-
-    doc["pitch"] = _pitch;
-    doc["roll"] = _roll;
-  
-    serializeJson(doc, buffer);
-
-    malfunction_emitter.send(buffer, "rollover-detected");
-  }
-}
-
-/**
  * Update the battery voltage.
  */
 void updateBattery() {
@@ -1193,7 +1193,7 @@ void updateBattery() {
   
   serializeJson(doc, buffer);
 
-  if (_battery_voltage > EPSILON && _battery_voltage < MIN_VOLTAGE) {
+  if (_battery_voltage > 1.0 && _battery_voltage < MIN_VOLTAGE) {
     stop();
     
     beep(4);
@@ -1256,10 +1256,10 @@ void updateGravity() {
 }
 
 /**
- * Calculate the current yaw, pitch, and roll from the raw quaternion and gravity vector.
+ * Calculate the current heading, pitch, and roll from the raw quaternion and gravity vector.
  */
 void updateOrientation() {
-  _yaw = atan2(2.0 * -_q.x * _q.y - 2.0 * _q.w * -_q.z, 2.0 * sq(_q.w) + 2.0 * sq(_q.x) - 1.0);
+  _heading = atan2(2.0 * -_q.x * _q.y - 2.0 * _q.w * -_q.z, 2.0 * sq(_q.w) + 2.0 * sq(_q.x) - 1.0);
   
   _pitch = atan2(_gravity.x, sqrt(sq(_gravity.y) + sq(_gravity.z)));
   
@@ -1320,7 +1320,7 @@ float calculateTargetAngle(float start, float delta) {
 }
 
 /**
- * Calculate the difference between a target and the current yaw.
+ * Calculate the difference between a target and the current heading.
  */
 float calculateAngleDelta(float start, float target) {
   float delta = target - start;
