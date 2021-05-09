@@ -57,8 +57,7 @@
 #define GRAVITY_SAMPLE_RATE 10
 #define ORIENTATION_SAMPLE_RATE 10
 #define ACCEL_CALIBRATION_LOOPS 8
-#define ACCEL_SAMPLE_RATE 10
-#define ACCEL_LSB_PER_G 16384.0
+#define FREEFALL_SAMPLE_RATE 100
 #define TEMPERATURE_SAMPLE_RATE 1000
 #define TEMPERATURE_SENSITIVITY 340.0
 #define TEMPERATURE_CONSTANT 36.53
@@ -107,6 +106,8 @@
 #define ROLLOVER_SAMPLE_RATE 500
 #define ROLLOVER_THRESHOLD HALF_PI
 
+#define SECURITY_SAMPLE_RATE 500
+
 #define MAX_RAND_INT 2147483647
 
 Ticker beep_timer;
@@ -131,9 +132,7 @@ bool _stopped = true;
 MPU6050 mpu(MPU_ADDRESS);
 
 Quaternion _q;
-VectorInt16 _aa;
 VectorFloat _gravity;
-VectorFloat _acceleration;
 float _heading, _pitch, _roll;
 float _heading_lock, _temperature;
 uint8_t _dmp_fifo_buffer[64];
@@ -141,13 +140,14 @@ uint16_t _dmp_packet_size;
 void ICACHE_RAM_ATTR dmpDataReady();
 volatile bool _dmp_ready = false;
 
-Ticker gravity_timer, orientation_timer, acceleration_timer;
-Ticker temperature_timer, rollover_timer;
+Ticker gravity_timer, orientation_timer;
+Ticker freefall_timer, temperature_timer;
 
 float _rotator_prev_delta, _rotator_delta_integral;
 float _stabilizer_prev_delta, _stabilizer_delta_integral;
 
 Ticker rotator_timer, stabilizer_timer;
+Ticker rollover_timer, security_timer;
 
 VL53L1X lidar;
 
@@ -158,8 +158,8 @@ uint8_t _scan_count;
 Ticker scan_timer, collision_timer;
 
 float _mover_prediction;
-long _mover_target_timestamp;
-long _mover_start_timestamp, _mover_end_timestamp;
+long _mover_start_timestamp;
+long _mover_end_timestamp;
 float _mover_features[MOVER_NUM_FEATURES];
 float _mover_weights[MOVER_NUM_FEATURES];
 float _mover_weight_velocities[MOVER_NUM_FEATURES];
@@ -320,7 +320,7 @@ void setupMotors() {
 
   analogWriteFreq(MAX_THROTTLE);
 
-  brake();
+  brake(1.0);
 
   Serial.println("Motors enabled");
 }
@@ -368,13 +368,18 @@ void setupMPU() {
   Serial.println(" done");
 
   mpu.dmpInitialize();
-  
+
   mpu.setDMPEnabled(true);
 
   _dmp_packet_size = mpu.dmpGetFIFOPacketSize();
 
+  mpu.setIntFreefallEnabled(true);
+  mpu.setIntMotionEnabled(true);
+  mpu.setIntZeroMotionEnabled(false);
+
   gravity_timer.attach_ms(GRAVITY_SAMPLE_RATE, updateGravity);
   orientation_timer.attach_ms(ORIENTATION_SAMPLE_RATE, updateOrientation);
+  freefall_timer.attach_ms(FREEFALL_SAMPLE_RATE, detectFreefall);
   temperature_timer.attach_ms(TEMPERATURE_SAMPLE_RATE, updateTemperature);
 
   Serial.println("DMP initialized");
@@ -479,8 +484,6 @@ void loop() {
       }
 
       mpu.dmpGetQuaternion(&_q, _dmp_fifo_buffer);
-
-      mpu.dmpGetAccel(&_aa, _dmp_fifo_buffer);
     }
 
     _dmp_ready = false;
@@ -616,7 +619,7 @@ void handleRotateLeft(AsyncWebServerRequest *request, JsonVariant &json) {
   const JsonObject& doc = json.as<JsonObject>();
 
   if (doc.containsKey("radians")) {
-    float radians = (float) doc["radians"];
+    float radians = doc["radians"];
       
     rotateLeft(radians);
   } else {
@@ -633,7 +636,7 @@ void handleRotateRight(AsyncWebServerRequest *request, JsonVariant &json) {
   const JsonObject& doc = json.as<JsonObject>();
 
   if (doc.containsKey("radians")) {
-    float radians = (float) doc["radians"];
+    float radians = doc["radians"];
       
     rotateRight(radians);
   } else {
@@ -666,7 +669,7 @@ void forward() {
 }
 
 /**
- * Turn in the left direction.
+ * Turn left.
  */
 void left() {    
   _direction = LEFT;
@@ -678,7 +681,7 @@ void left() {
 }
 
 /**
- * Turn in the right direction.
+ * Turn right.
  */
 void right() {  
   _direction = RIGHT;
@@ -709,6 +712,7 @@ void reverse() {
 void go() {    
   _stopped = false;
 
+  disableSecurity();
   enableRolloverDetection();
 
   analogWrite(MOTOR_A_THROTTLE_PIN, _throttle);
@@ -716,26 +720,28 @@ void go() {
 }
 
 /**
- * Disengage the motors and related timers.
+ * Apply the brake to the motors.
  */
-void stop() {
-  brake();
-
-  _stopped = true;
+void brake(float amount) {
+  int throttle = round((1.0 - constrain(amount, 0.0, 1.0)) * _throttle);
   
-  explore_timer.detach();
+  analogWrite(MOTOR_A_THROTTLE_PIN, throttle);
+  analogWrite(MOTOR_B_THROTTLE_PIN, throttle);
 }
 
 /**
- * Apply the brake to the motors.
+ * Disengage the motors and related timers.
  */
-void brake() {
-  analogWrite(MOTOR_A_THROTTLE_PIN, 0);
-  analogWrite(MOTOR_B_THROTTLE_PIN, 0);
+void stop() {
+  brake(1.0);
 
   disableCollisionDetection();
   disableStabilizer();
   disableRolloverDetection();
+
+  _stopped = true;
+  
+  explore_timer.detach();
 }
 
 /**
@@ -768,8 +774,6 @@ void setThrottlePercentage(int throttle) {
  * Rotate the vehicle to the left.
  */
 void rotateLeft(float radians) {
-  radians = constrain(radians, 0, M_PI);
-    
   _direction = LEFT;
 
   rotate(-radians);
@@ -782,8 +786,6 @@ void rotateLeft(float radians) {
  * Rotate the vehicle to the right.
  */
 void rotateRight(float radians) {  
-  radians = constrain(radians, 0, M_PI);
-   
   _direction = RIGHT;
 
   rotate(radians);
@@ -796,9 +798,9 @@ void rotateRight(float radians) {
  * Rotate the vehicle.
  */
 void rotate(float radians) {
-  radians = constrain(radians, -M_PI, M_PI);
+  float target = constrain(radians, -M_PI, M_PI);
     
-  _heading_lock = calculateTargetAngle(_heading, radians);
+  _heading_lock = calculateTargetAngle(_heading, target);
 
   _rotator_delta_integral = 0.0;
   _rotator_prev_delta = 0.0;
@@ -846,7 +848,7 @@ void rotator() {
   analogWrite(MOTOR_B_THROTTLE_PIN, rotator_throttle);
 
   if (fabs(delta) < ROTATOR_THRESHOLD) {    
-    brake();
+    brake(1.0);
 
     rotator_timer.detach();
   } else {
@@ -983,12 +985,14 @@ void move() {
   _mover_prediction = delta;
 
   _mover_start_timestamp = now;
-  
-  _mover_target_timestamp = now + fmax(0.0, round(delta));
 
-  long overshoot = random(0, (long) round(MOVER_MAX_OVERSHOOT * delta));
+  long max_overshoot = round(fmax(0.0, MOVER_MAX_OVERSHOOT * delta));
+
+  long overshoot = random(0, max_overshoot);
+
+  long burn_time = round(fmax(0.0, delta + overshoot));
   
-  _mover_end_timestamp = _mover_target_timestamp + overshoot;
+  _mover_end_timestamp = now + burn_time;
 
   _direction = FORWARD;
 
@@ -1009,7 +1013,7 @@ void mover() {
   long now = millis();
 
   if (now > _mover_end_timestamp || distanceToObject() < COLLISION_THRESHOLD) {
-    brake();
+    brake(1.0);
 
     float delta = now - _mover_start_timestamp;
 
@@ -1138,9 +1142,22 @@ void detectRollover() {
   if (fabs(_pitch) > ROLLOVER_THRESHOLD || fabs(_roll) > ROLLOVER_THRESHOLD) {
     stop();
 
-    beep(4);
+    beep(5);
 
     malfunction_emitter.send("", "rollover-detected");
+  }
+}
+
+/**
+ * Detect if the vehicle is in freefall.
+ */
+void detectFreefall() {
+  if (mpu.getIntFreefallStatus()) {
+    stop();
+    
+    beep(5);
+
+    malfunction_emitter.send("", "freefall-detected");
   }
 }
 
@@ -1162,19 +1179,37 @@ void disableCollisionDetection() {
  * Detect if collision with an object is iminent and stop the vehicle.
  */
 void detectCollision() {
-  StaticJsonDocument<64> doc;
-  char buffer[64];
-  
-  int distance = distanceToObject();
-  
-  if (distance < COLLISION_THRESHOLD) {
-    brake();
+  if (distanceToObject() < COLLISION_THRESHOLD) {
+    brake(1.0);
 
-    doc["distance"] = distance;
-  
-    serializeJson(doc, buffer);
+    malfunction_emitter.send("", "collision-detected");
+  }
+}
 
-    malfunction_emitter.send(buffer, "collision-detected");
+/**
+ * Enable the security system.
+ */
+void enableSecurity() {
+  stop();
+  
+  security_timer.attach_ms(SECURITY_SAMPLE_RATE, detectTheft);
+}
+
+/**
+ * Disable the security system.
+ */
+void disableSecurity() {
+  security_timer.detach();
+}
+
+/**
+ * Control loop to detect unauthorized movement.
+ */
+void detectTheft() {
+  if (mpu.getIntMotionStatus()) {
+    beep(3);
+
+    malfunction_emitter.send("", "theft-detected");
   }
 }
 
@@ -1264,15 +1299,6 @@ void updateOrientation() {
   _pitch = atan2(_gravity.x, sqrt(sq(_gravity.y) + sq(_gravity.z)));
   
   _roll = atan2(_gravity.y, _gravity.z);
-}
-
-/**
- * Update the current acceleration in m/sec ^ 2 of the vehicle with gravity vector removed.
- */
-void updateAcceleration() {
-  _acceleration.x = (-_aa.x / ACCEL_LSB_PER_G) - _gravity.x;
-  _acceleration.y = (_aa.y / ACCEL_LSB_PER_G) - _gravity.y;
-  _acceleration.z = (-_aa.z / ACCEL_LSB_PER_G) - _gravity.z;
 }
 
 /**
