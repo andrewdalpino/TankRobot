@@ -39,6 +39,7 @@
 #define MOTOR_B_THROTTLE_PIN 4
 #define MIN_THROTTLE 700
 #define MAX_THROTTLE 1000
+#define BRAKE_SAMPLE_RATE 25
 
 #define FORWARD 1
 #define REVERSE 0
@@ -57,7 +58,6 @@
 #define GRAVITY_SAMPLE_RATE 10
 #define ORIENTATION_SAMPLE_RATE 10
 #define ACCEL_CALIBRATION_LOOPS 8
-#define FREEFALL_SAMPLE_RATE 100
 #define TEMPERATURE_SAMPLE_RATE 1000
 #define TEMPERATURE_SENSITIVITY 340.0
 #define TEMPERATURE_CONSTANT 36.53
@@ -106,7 +106,8 @@
 #define ROLLOVER_SAMPLE_RATE 500
 #define ROLLOVER_THRESHOLD HALF_PI
 
-#define SECURITY_SAMPLE_RATE 500
+#define FREEFALL_SAMPLE_RATE 100
+#define SECURITY_SAMPLE_RATE 200
 
 #define MAX_RAND_INT 2147483647
 
@@ -319,8 +320,6 @@ void setupMotors() {
   pinMode(MOTOR_B_THROTTLE_PIN, OUTPUT);
 
   analogWriteFreq(MAX_THROTTLE);
-
-  brake(1.0);
 
   Serial.println("Motors enabled");
 }
@@ -722,18 +721,26 @@ void go() {
 /**
  * Apply the brake to the motors.
  */
-void brake(float amount) {
-  int throttle = round((1.0 - constrain(amount, 0.0, 1.0)) * _throttle);
+void brake(uint8_t steps) {
+  float amount = 1.0 / steps;
+  
+  int throttle = round((1.0 - amount) * _throttle);
   
   analogWrite(MOTOR_A_THROTTLE_PIN, throttle);
   analogWrite(MOTOR_B_THROTTLE_PIN, throttle);
+
+  --steps;
+
+  if (steps > 0) {
+    brake_timer.once_ms(BRAKE_SAMPLE_RATE, brake, steps);
+  }
 }
 
 /**
  * Disengage the motors and related timers.
  */
 void stop() {
-  brake(1.0);
+  brake(10);
 
   disableCollisionDetection();
   disableStabilizer();
@@ -848,7 +855,7 @@ void rotator() {
   analogWrite(MOTOR_B_THROTTLE_PIN, rotator_throttle);
 
   if (fabs(delta) < ROTATOR_THRESHOLD) {    
-    brake(1.0);
+    brake(10);
 
     rotator_timer.detach();
   } else {
@@ -1013,7 +1020,7 @@ void mover() {
   long now = millis();
 
   if (now > _mover_end_timestamp || distanceToObject() < COLLISION_THRESHOLD) {
-    brake(1.0);
+    brake(10);
 
     float delta = now - _mover_start_timestamp;
 
@@ -1180,7 +1187,7 @@ void disableCollisionDetection() {
  */
 void detectCollision() {
   if (distanceToObject() < COLLISION_THRESHOLD) {
-    brake(1.0);
+    brake(1);
 
     malfunction_emitter.send("", "collision-detected");
   }
@@ -1263,11 +1270,13 @@ void updateTemperature() {
  * Beep the beeper.
  */
 void beep(uint8_t count) {
-  digitalWrite(BEEPER_PIN, HIGH);
+  if (!beep_timer.active()) {
+    digitalWrite(BEEPER_PIN, HIGH);
 
-  count--;
+    count--;
 
-  beep_timer.once_ms(BEEP_DURATION, silenceBeeper, count);
+    beep_timer.once_ms(BEEP_DURATION, silenceBeeper, count);
+  }
 }
 
 /**
