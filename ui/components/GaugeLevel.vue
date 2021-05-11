@@ -8,13 +8,13 @@
         </div>
         <div class="level-item has-text-centered">
             <div>
-                <p class="heading is-size-7">{{ sensors.voltage.toFixed(1) }}V</p>
+                <p class="heading is-size-7">{{ sensors.battery.voltage.toFixed(1) }}V</p>
                 <span class="icon is-large"><i class="fas fa-2x fa-bolt"></i></span>
             </div>
         </div>
         <div class="level-item has-text-centered">
             <div>
-                <p class="heading is-size-7">{{ batteryPercentage.toFixed(0) }}%</p>
+                <p class="heading is-size-7">{{ sensors.battery.percentage.toFixed(0) }}%</p>
                 <span class="icon is-large"><i class="fas fa-2x" :class="batteryIndicator"></i></span>
             </div>
         </div>
@@ -24,7 +24,6 @@
 <script lang="ts">
 import Vue from 'vue';
 
-const MAX_BATTERY_VOLTAGE = 8.4;
 const LOW_TEMP_THRESHOLD = 5.0;
 const HIGH_TEMP_THRESHOLD = 45.0;
     
@@ -36,9 +35,6 @@ export default Vue.extend({
         },
     },
     computed: {
-        batteryPercentage() : number {
-            return (this.sensors.voltage / MAX_BATTERY_VOLTAGE) * 100.0;
-        },
         temperatureIndicator() : string {
             if (this.sensors.temperature < LOW_TEMP_THRESHOLD) {
                 return 'fa-temperature-low';
@@ -49,7 +45,7 @@ export default Vue.extend({
             }
         },
         batteryIndicator() : string {
-            const p = this.batteryPercentage;
+            const p = this.sensors.battery.percentage;
 
             if (p <= 5.0) {
                 return 'fa-battery-empty';

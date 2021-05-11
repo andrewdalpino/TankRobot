@@ -1,10 +1,10 @@
 <template>
     <div class="buttons">
-        <button class="button is-large" @click="beep()">
-            <span class="icon"><i class="fas fa-bullhorn"></i></span>
-        </button>
         <button class="button is-large" :class="{ 'is-success' : features.autonomy }" @click="toggleAutonomy()">
             <span class="icon"><i class="fas fa-brain"></i></span>
+        </button>
+        <button class="button is-large" @click="beep()">
+            <span class="icon"><i class="fas fa-bullhorn"></i></span>
         </button>
     </div>
 </template>

@@ -39,7 +39,6 @@
 #define MOTOR_B_THROTTLE_PIN 4
 #define MIN_THROTTLE 700
 #define MAX_THROTTLE 1000
-#define BRAKE_SAMPLE_RATE 25
 
 #define FORWARD 1
 #define REVERSE 0
@@ -63,12 +62,12 @@
 #define TEMPERATURE_CONSTANT 36.53
 
 #define ROTATOR_SAMPLE_RATE ORIENTATION_SAMPLE_RATE
-#define ROTATOR_THRESHOLD 2.0 * DEG_TO_RAD
+#define ROTATOR_THRESHOLD 1.3 * DEG_TO_RAD
 #define ROTATOR_P_GAIN 2.0
 #define ROTATOR_I_GAIN 0.7
 #define ROTATOR_D_GAIN 1.4
 
-#define STABILIZER_SAMPLE_RATE 50
+#define STABILIZER_SAMPLE_RATE ORIENTATION_SAMPLE_RATE
 #define STABILIZER_P_GAIN 0.6
 #define STABILIZER_I_GAIN 0.8
 #define STABILIZER_D_GAIN 0.3
@@ -86,7 +85,7 @@
 
 #define EXPLORE_SAMPLE_RATE 500
 
-#define SCAN_SAMPLE_RATE 250
+#define SCAN_SAMPLE_RATE 100
 #define SCAN_WINDOW M_PI
 #define NUM_SCANS 4
 
@@ -94,7 +93,6 @@
 
 #define MOVER_SAMPLE_RATE LIDAR_SAMPLE_RATE
 #define MOVER_MAX_OVERSHOOT 0.33
-#define MOVER_NUM_FEATURES 4
 #define MOVER_LEARNING_RATE 10.0
 #define MOVER_MOMENTUM_DECAY 0.1
 #define MOVER_NORM_DECAY 0.001
@@ -105,9 +103,6 @@
 
 #define ROLLOVER_SAMPLE_RATE 500
 #define ROLLOVER_THRESHOLD HALF_PI
-
-#define FREEFALL_SAMPLE_RATE 100
-#define SECURITY_SAMPLE_RATE 200
 
 #define MAX_RAND_INT 2147483647
 
@@ -138,17 +133,17 @@ float _heading, _pitch, _roll;
 float _heading_lock, _temperature;
 uint8_t _dmp_fifo_buffer[64];
 uint16_t _dmp_packet_size;
-void ICACHE_RAM_ATTR dmpDataReady();
 volatile bool _dmp_ready = false;
+void ICACHE_RAM_ATTR dmpDataReady();
 
 Ticker gravity_timer, orientation_timer;
-Ticker freefall_timer, temperature_timer;
+Ticker temperature_timer;
 
 float _rotator_prev_delta, _rotator_delta_integral;
 float _stabilizer_prev_delta, _stabilizer_delta_integral;
 
 Ticker rotator_timer, stabilizer_timer;
-Ticker rollover_timer, security_timer;
+Ticker rollover_timer;
 
 VL53L1X lidar;
 
@@ -159,15 +154,11 @@ uint8_t _scan_count;
 Ticker scan_timer, collision_timer;
 
 float _mover_prediction;
-long _mover_start_timestamp;
-long _mover_end_timestamp;
-float _mover_features[MOVER_NUM_FEATURES];
-float _mover_weights[MOVER_NUM_FEATURES];
-float _mover_weight_velocities[MOVER_NUM_FEATURES];
-float _mover_weight_norms[MOVER_NUM_FEATURES];
-float _mover_bias;
-float _mover_bias_velocity;
-float _mover_bias_norm;
+long _mover_start_timestamp, _mover_end_timestamp;
+float _mover_features[4];
+float _mover_weights[4], _mover_bias;
+float _mover_weight_velocities[4], _mover_bias_velocity;
+float _mover_weight_norms[4], _mover_bias_norm;
 
 Ticker mover_timer;
 
@@ -197,7 +188,7 @@ void setupBeeper() {
  * Set up the central processing unit.
  */
 void setupCPU() {
-  Serial.print("CPU clock: ");
+  Serial.print("CPU speed: ");
   Serial.print(ESP.getCpuFreqMHz());
   Serial.println("mhz");
 }
@@ -212,6 +203,10 @@ void setupROM() {
     panicNow();
   }
 
+  Serial.print("ROM speed: ");
+  Serial.print(ESP.getFlashChipSpeed() / 1000000);
+  Serial.println("mhz");
+
   Serial.print("ROM size: ");
   Serial.print(ESP.getFlashChipRealSize() / 1024);
   Serial.println("kb");
@@ -219,10 +214,6 @@ void setupROM() {
   Serial.print("Free space: ");
   Serial.print(ESP.getFreeSketchSpace() / 1024.0, 1);
   Serial.println("kb");
-
-  Serial.print("ROM speed: ");
-  Serial.print(ESP.getFlashChipSpeed() / 1000000);
-  Serial.println("mhz");
 }
 
 /**
@@ -372,13 +363,8 @@ void setupMPU() {
 
   _dmp_packet_size = mpu.dmpGetFIFOPacketSize();
 
-  mpu.setIntFreefallEnabled(true);
-  mpu.setIntMotionEnabled(true);
-  mpu.setIntZeroMotionEnabled(false);
-
   gravity_timer.attach_ms(GRAVITY_SAMPLE_RATE, updateGravity);
   orientation_timer.attach_ms(ORIENTATION_SAMPLE_RATE, updateOrientation);
-  freefall_timer.attach_ms(FREEFALL_SAMPLE_RATE, detectFreefall);
   temperature_timer.attach_ms(TEMPERATURE_SAMPLE_RATE, updateTemperature);
 
   Serial.println("DMP initialized");
@@ -418,8 +404,8 @@ void setupRandom() {
  * Set up the mover model.
  */
 void setupMover() {
-  for (uint8_t i = 0; i < MOVER_NUM_FEATURES; i++) {
-    _mover_weights[i] = random(-MAX_RAND_INT, MAX_RAND_INT) / MAX_RAND_INT;
+  for (uint8_t i = 0; i < 4; i++) {
+    _mover_weights[i] = random(-MAX_RAND_INT, MAX_RAND_INT) / (float) MAX_RAND_INT;
   }
   
   Serial.println("Mover model initialized");
@@ -514,6 +500,8 @@ int handleGetRobot(AsyncWebServerRequest *request) {
   sensors["temperature"] = _temperature;
 
   JsonObject features = robot.createNestedObject("features");
+
+  features["autonomy"] = isAutonomous();
   
   serializeJson(doc, buffer);
 
@@ -600,12 +588,6 @@ void handleSetThrottlePercentage(AsyncWebServerRequest *request, JsonVariant &js
 
   int throttle = doc["throttle"];
 
-  if (throttle < 0 || throttle > 100) {
-    request->send(HTTP_UNPROCESSABLE_ENTITY);
-
-    return;
-  }
-
   setThrottlePercentage(throttle);
 
   request->send(HTTP_OK);
@@ -617,13 +599,15 @@ void handleSetThrottlePercentage(AsyncWebServerRequest *request, JsonVariant &js
 void handleRotateLeft(AsyncWebServerRequest *request, JsonVariant &json) {
   const JsonObject& doc = json.as<JsonObject>();
 
-  if (doc.containsKey("radians")) {
-    float radians = doc["radians"];
-      
-    rotateLeft(radians);
-  } else {
-    rotateLeft(HALF_PI);
+  if (!doc.containsKey("radians")) {
+    request->send(HTTP_UNPROCESSABLE_ENTITY);
+
+    return;
   }
+
+  float radians = doc["radians"];
+      
+  rotateLeft(radians);
 
   request->send(HTTP_OK);
 }
@@ -634,13 +618,15 @@ void handleRotateLeft(AsyncWebServerRequest *request, JsonVariant &json) {
 void handleRotateRight(AsyncWebServerRequest *request, JsonVariant &json) {
   const JsonObject& doc = json.as<JsonObject>();
 
-  if (doc.containsKey("radians")) {
-    float radians = doc["radians"];
-      
-    rotateRight(radians);
-  } else {
-    rotateRight(HALF_PI);
+  if (!doc.containsKey("radians")) {
+    request->send(HTTP_UNPROCESSABLE_ENTITY);
+
+    return;
   }
+
+  float radians = doc["radians"];
+      
+  rotateRight(radians);
   
   request->send(HTTP_OK);
 }
@@ -711,7 +697,6 @@ void reverse() {
 void go() {    
   _stopped = false;
 
-  disableSecurity();
   enableRolloverDetection();
 
   analogWrite(MOTOR_A_THROTTLE_PIN, _throttle);
@@ -721,26 +706,16 @@ void go() {
 /**
  * Apply the brake to the motors.
  */
-void brake(uint8_t steps) {
-  float amount = 1.0 / steps;
-  
-  int throttle = round((1.0 - amount) * _throttle);
-  
-  analogWrite(MOTOR_A_THROTTLE_PIN, throttle);
-  analogWrite(MOTOR_B_THROTTLE_PIN, throttle);
-
-  --steps;
-
-  if (steps > 0) {
-    brake_timer.once_ms(BRAKE_SAMPLE_RATE, brake, steps);
-  }
+void brake() {
+  analogWrite(MOTOR_A_THROTTLE_PIN, 0);
+  analogWrite(MOTOR_B_THROTTLE_PIN, 0);
 }
 
 /**
  * Disengage the motors and related timers.
  */
 void stop() {
-  brake(10);
+  brake();
 
   disableCollisionDetection();
   disableStabilizer();
@@ -855,7 +830,7 @@ void rotator() {
   analogWrite(MOTOR_B_THROTTLE_PIN, rotator_throttle);
 
   if (fabs(delta) < ROTATOR_THRESHOLD) {    
-    brake(10);
+    brake();
 
     rotator_timer.detach();
   } else {
@@ -875,10 +850,19 @@ void explore() {
 }
 
 /**
+ * Is the robot acting in autonomous mode?
+ */
+bool isAutonomous() {
+  return explore_timer.active();
+}
+
+/**
  * Control loop to explore the environment.
  */
 void explorer() {
-  if (!scan_timer.active() && !mover_timer.active() && !rotator_timer.active()) {
+  bool ready = !scan_timer.active() && !mover_timer.active() && !rotator_timer.active();
+  
+  if (ready) {
     switch (_explorer_step) {
       case 0: {
         scanEnvironment();
@@ -927,7 +911,7 @@ void scanner() {
     
     _scan_angles[_scan_count] = _heading;
    
-    _scan_count++;
+    ++_scan_count;
     
     if (_scan_count < NUM_SCANS) {
       rotateLeft(SCAN_WINDOW / (NUM_SCANS - 1));
@@ -947,13 +931,13 @@ void choosePath() {
     weights[i] = round(pow(_distances_to_object[i], PATH_AFFINITY));
   }
   
-  long sigma = 0;
+  long total = 0;
 
   for (uint8_t i = 0; i < NUM_SCANS; i++) {
-    sigma += weights[i];
+    total += weights[i];
   }
  
-  long rho = random(0, sigma);
+  long rho = random(0, total);
 
   float delta;
   
@@ -977,11 +961,11 @@ void move() {
   _mover_features[0] = throttlePercentage() / 100.0;
   _mover_features[1] = batteryPercentage() / 100.0;
   _mover_features[2] = _pitch / HALF_PI;
-  _mover_features[3] = distanceToObject() / LIDAR_MAX_RANGE;
+  _mover_features[3] = distanceToObject() / (float) LIDAR_MAX_RANGE;
 
   float delta = 0.0;
 
-  for (uint8_t i = 0; i < MOVER_NUM_FEATURES; i++) {
+  for (uint8_t i = 0; i < 4; i++) {
     delta += _mover_features[i] * _mover_weights[i];
   }
 
@@ -993,7 +977,7 @@ void move() {
 
   _mover_start_timestamp = now;
 
-  long max_overshoot = round(fmax(0.0, MOVER_MAX_OVERSHOOT * delta));
+  long max_overshoot = round(MOVER_MAX_OVERSHOOT * fabs(delta));
 
   long overshoot = random(0, max_overshoot);
 
@@ -1020,7 +1004,9 @@ void mover() {
   long now = millis();
 
   if (now > _mover_end_timestamp || distanceToObject() < COLLISION_THRESHOLD) {
-    brake(10);
+    brake();
+
+    mover_timer.detach();
 
     float delta = now - _mover_start_timestamp;
 
@@ -1028,7 +1014,7 @@ void mover() {
 
     float dydw;
 
-    for (uint8_t i = 0; i < MOVER_NUM_FEATURES; i++) {
+    for (uint8_t i = 0; i < 4; i++) {
       dydw = dydl * _mover_features[i];
       
       dydw += MOVER_ALPHA * _mover_weights[i];
@@ -1052,8 +1038,6 @@ void mover() {
     _mover_bias -= (MOVER_LEARNING_RATE * _mover_bias_velocity)
       / sqrt(_mover_bias_norm);
   }
-
-  mover_timer.detach();
 }
 
 /**
@@ -1156,19 +1140,6 @@ void detectRollover() {
 }
 
 /**
- * Detect if the vehicle is in freefall.
- */
-void detectFreefall() {
-  if (mpu.getIntFreefallStatus()) {
-    stop();
-    
-    beep(5);
-
-    malfunction_emitter.send("", "freefall-detected");
-  }
-}
-
-/**
  * Enable collision detection.
  */
 void enableCollisionDetection() {
@@ -1187,36 +1158,9 @@ void disableCollisionDetection() {
  */
 void detectCollision() {
   if (distanceToObject() < COLLISION_THRESHOLD) {
-    brake(1);
+    brake();
 
     malfunction_emitter.send("", "collision-detected");
-  }
-}
-
-/**
- * Enable the security system.
- */
-void enableSecurity() {
-  stop();
-  
-  security_timer.attach_ms(SECURITY_SAMPLE_RATE, detectTheft);
-}
-
-/**
- * Disable the security system.
- */
-void disableSecurity() {
-  security_timer.detach();
-}
-
-/**
- * Control loop to detect unauthorized movement.
- */
-void detectTheft() {
-  if (mpu.getIntMotionStatus()) {
-    beep(3);
-
-    malfunction_emitter.send("", "theft-detected");
   }
 }
 
@@ -1230,19 +1174,28 @@ void updateBattery() {
   unsigned int raw = analogRead(BATTERY_PIN);
 
   _battery_voltage = (raw / VOLTMETER_RESOLUTION) * MAX_VOLTAGE;
-      
-  doc["voltage"] = _battery_voltage;
-  
-  serializeJson(doc, buffer);
 
   if (_battery_voltage > 1.0 && _battery_voltage < MIN_VOLTAGE) {
     stop();
-    
-    beep(4);
 
-    malfunction_emitter.send(buffer, "battery-undervoltage");
+    if (malfunction_emitter.count() > 0) {
+      doc["voltage"] = _battery_voltage;
+  
+      serializeJson(doc, buffer);
+
+      malfunction_emitter.send(buffer, "battery-undervoltage");
+    }
+
+    panicNow();
   } else {
-    sensor_emitter.send(buffer, "battery-voltage-updated");
+    if (sensor_emitter.count() > 0) {
+      doc["voltage"] = _battery_voltage;
+      doc["percentage"] = batteryPercentage();
+  
+      serializeJson(doc, buffer);
+    
+      sensor_emitter.send(buffer, "battery-voltage-updated");
+    }
   }
 }
 
@@ -1250,14 +1203,14 @@ void updateBattery() {
  * Update the temperature.
  */
 void updateTemperature() {
+  StaticJsonDocument<64> doc;
+  char buffer[64];
+    
   long raw = mpu.getTemperature();
   
   _temperature = raw / TEMPERATURE_SENSITIVITY + TEMPERATURE_CONSTANT;
 
-  if (sensor_emitter.count() > 0) {
-    StaticJsonDocument<64> doc;
-    char buffer[64];
-      
+  if (sensor_emitter.count() > 0) {      
     doc["temperature"] = _temperature;
   
     serializeJson(doc, buffer);
@@ -1270,13 +1223,11 @@ void updateTemperature() {
  * Beep the beeper.
  */
 void beep(uint8_t count) {
-  if (!beep_timer.active()) {
-    digitalWrite(BEEPER_PIN, HIGH);
+  digitalWrite(BEEPER_PIN, HIGH);
 
-    count--;
+  --count;
 
-    beep_timer.once_ms(BEEP_DURATION, silenceBeeper, count);
-  }
+  beep_timer.once_ms(BEEP_DURATION, silenceBeeper, count);
 }
 
 /**
