@@ -19,7 +19,7 @@
         </section>
         <section class="section">
             <div class="container">
-                <feature-panel v-if="robot.features" :features="robot.features"></feature-panel>
+                <feature-panel></feature-panel>
             </div>
         </section>
         <page-loader :loading="loading"></page-loader>
@@ -29,7 +29,7 @@
 <script lang="ts">
 import Vue from 'vue';
 import { FORWARD, REVERSE, LEFT, RIGHT } from '../constants';
-import bus from '../bus';
+import bus from '../providers/bus';
 
 export default Vue.extend({
     data() {
@@ -37,40 +37,18 @@ export default Vue.extend({
             robot: {
                 motors: undefined,
                 sensors: undefined,
-                features: undefined,
             },
             loading: false,
         };
-    },
-    props: {
-        robot: {
-            type: Object,
-            required: true,
-        },
     },
     mounted() {
         this.loading = true;
 
         this.$http.get('/robot').then((response) => {
-            this.robot = response.data.robot;
+            this.robot.motors = response.data.robot.motors;
+            this.robot.sensors = response.data.robot.sensors;
 
-            this.$sse('/robot/malfunctions/events', { format: 'json' }).then((sse) => {
-                sse.subscribe('collision-detected', () => {
-                    bus.$emit('collision-detected');
-                });
-
-                sse.subscribe('rollover-detected', () => {
-                    bus.$emit('rollover-detected');
-                });
-
-                sse.subscribe('battery-undervoltage', (event) => {
-                    bus.$emit('battery-undervoltage', {
-                        voltage: event.voltage,
-                    });
-                });
-            });
-
-            this.$sse('/robot/sensors/events', { format: 'json' }).then((sse) => {
+            this.$sse('/events/robot/sensors', { format: 'json' }).then((sse) => {
                 sse.subscribe('battery-voltage-updated', (event) => {
                     this.robot.sensors.battery.voltage = event.voltage;
                     this.robot.sensors.battery.percentage = event.percentage;
@@ -118,13 +96,8 @@ export default Vue.extend({
         });
         
         bus.$on('autonomy-enabled', () => {
-            this.robot.features.autonomy = true;
             this.robot.motors.direction = null;
             this.robot.motors.stopped = true;
-        });
-
-        bus.$on('autonomy-disabled', () => {
-            this.robot.features.autonomy = false;
         });
     },
 });

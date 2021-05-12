@@ -16,6 +16,12 @@
                         <span>Controls</span>
                     </router-link>
                 </div>
+                <div class="navbar-item">
+                    <router-link :to="{ name: 'autonomy' }" class="navbar-item" @click.native="open = false">
+                        <span class="icon"><i class="fas fa-brain"></i></span>
+                        <span>Autonomy</span>
+                    </router-link>
+                </div>
             </div>
         </div>
     </nav>

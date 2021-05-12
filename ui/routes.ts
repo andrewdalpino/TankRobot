@@ -1,4 +1,5 @@
 import Control from './pages/Control.vue';
+import Autonomy from './pages/Autonomy.vue';
 
 export default [
     {
@@ -10,5 +11,10 @@ export default [
         name: 'control',
         path: '/control',
         component: Control,
+    },
+    {
+        name: 'autonomy',
+        path: '/autonomy',
+        component: Autonomy,
     },
 ];

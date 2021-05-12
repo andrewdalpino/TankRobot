@@ -62,12 +62,12 @@
 #define TEMPERATURE_CONSTANT 36.53
 
 #define ROTATOR_SAMPLE_RATE ORIENTATION_SAMPLE_RATE
-#define ROTATOR_THRESHOLD 1.3 * DEG_TO_RAD
+#define ROTATOR_THRESHOLD 1.2 * DEG_TO_RAD
 #define ROTATOR_P_GAIN 2.0
 #define ROTATOR_I_GAIN 0.7
 #define ROTATOR_D_GAIN 1.4
 
-#define STABILIZER_SAMPLE_RATE ORIENTATION_SAMPLE_RATE
+#define STABILIZER_SAMPLE_RATE 100
 #define STABILIZER_P_GAIN 0.6
 #define STABILIZER_I_GAIN 0.8
 #define STABILIZER_D_GAIN 0.3
@@ -89,14 +89,7 @@
 #define SCAN_WINDOW M_PI
 #define NUM_SCANS 4
 
-#define PATH_AFFINITY 2.0
-
 #define MOVER_SAMPLE_RATE LIDAR_SAMPLE_RATE
-#define MOVER_MAX_OVERSHOOT 0.33
-#define MOVER_LEARNING_RATE 10.0
-#define MOVER_MOMENTUM_DECAY 0.1
-#define MOVER_NORM_DECAY 0.001
-#define MOVER_ALPHA 1e-4
 
 #define COLLISION_SAMPLE_RATE LIDAR_SAMPLE_RATE
 #define COLLISION_THRESHOLD 400
@@ -114,8 +107,9 @@ const IPAddress _subnet(255,255,255,0);
 
 AsyncWebServer server(HTTP_PORT);
 
-AsyncEventSource sensor_emitter("/robot/sensors/events");
-AsyncEventSource malfunction_emitter("/robot/malfunctions/events");
+AsyncEventSource sensor_emitter("/events/robot/sensors");
+AsyncEventSource training_emitter("/events/robot/training");
+AsyncEventSource malfunction_emitter("/events/robot/malfunctions");
 
 float _battery_voltage;
 
@@ -150,15 +144,25 @@ VL53L1X lidar;
 float _scan_angles[NUM_SCANS];
 int _distances_to_object[NUM_SCANS];
 uint8_t _scan_count;
+float _path_affinity = 2.0;
 
 Ticker scan_timer, collision_timer;
 
-float _mover_prediction;
-long _mover_start_timestamp, _mover_end_timestamp;
+float _mover_max_overshoot = 0.33;
+float _mover_learning_rate = 10.0;
+float _mover_velocity_decay = 0.1;
+float _mover_norm_decay = 0.001;
+float _mover_alpha = 1e-4;
 float _mover_features[4];
-float _mover_weights[4], _mover_bias;
-float _mover_weight_velocities[4], _mover_bias_velocity;
-float _mover_weight_norms[4], _mover_bias_norm;
+float _mover_weights[4];
+float _mover_weight_velocities[4];
+float _mover_weight_norms[4];
+float _mover_bias;
+float _mover_bias_velocity;
+float _mover_bias_norm;
+float _mover_prediction;
+long _mover_start_timestamp;
+long _mover_end_timestamp;
 
 Ticker mover_timer;
 
@@ -251,6 +255,7 @@ void setupAccessPoint() {
 void setupHttpServer() {
   server.serveStatic("/ui", SPIFFS, "/app.html");
   server.serveStatic("/ui/control", SPIFFS, "/app.html");
+  server.serveStatic("/ui/autonomy", SPIFFS, "/app.html");
   server.serveStatic("/manifest.json", SPIFFS, "/manifest.json");
   server.serveStatic("/app.js", SPIFFS, "/app.js");
   server.serveStatic("/sw.js", SPIFFS, "/sw.js");
@@ -279,6 +284,7 @@ void setupHttpServer() {
   server.addHandler(new AsyncCallbackJsonWebHandler("/robot/rotator/right", handleRotateRight));
 
   server.addHandler(&sensor_emitter);
+  server.addHandler(&training_emitter);
   server.addHandler(&malfunction_emitter);
 
   server.onNotFound(handleNotFound);
@@ -499,9 +505,21 @@ int handleGetRobot(AsyncWebServerRequest *request) {
   
   sensors["temperature"] = _temperature;
 
-  JsonObject features = robot.createNestedObject("features");
+  JsonObject autonomy = robot.createNestedObject("autonomy");
 
-  features["autonomy"] = isAutonomous();
+  autonomy["enabled"] = isAutonomous();
+  
+  JsonObject scanner = autonomy.createNestedObject("scanner");
+
+  scanner["pathAffinity"] = _path_affinity;
+
+  JsonObject mover = autonomy.createNestedObject("mover");
+
+  mover["maxOvershoot"] = _mover_max_overshoot;
+  mover["learningRate"] = _mover_learning_rate;
+  mover["velocityDecay"] = _mover_velocity_decay;
+  mover["normDecay"] = _mover_norm_decay;
+  mover["alpha"] = _mover_alpha;
   
   serializeJson(doc, buffer);
 
@@ -928,7 +946,7 @@ void choosePath() {
   long weights[NUM_SCANS];
   
   for (uint8_t i = 0; i < NUM_SCANS; i++) {
-    weights[i] = round(pow(_distances_to_object[i], PATH_AFFINITY));
+    weights[i] = round(pow(_distances_to_object[i], _path_affinity));
   }
   
   long total = 0;
@@ -977,7 +995,7 @@ void move() {
 
   _mover_start_timestamp = now;
 
-  long max_overshoot = round(MOVER_MAX_OVERSHOOT * fabs(delta));
+  long max_overshoot = round(_mover_max_overshoot * fabs(delta));
 
   long overshoot = random(0, max_overshoot);
 
@@ -1001,6 +1019,9 @@ void move() {
  * Control loop to displace the vehicle in the x axis.
  */
 void mover() {
+  StaticJsonDocument<64> doc;
+  char buffer[64];
+  
   long now = millis();
 
   if (now > _mover_end_timestamp || distanceToObject() < COLLISION_THRESHOLD) {
@@ -1017,26 +1038,36 @@ void mover() {
     for (uint8_t i = 0; i < 4; i++) {
       dydw = dydl * _mover_features[i];
       
-      dydw += MOVER_ALPHA * _mover_weights[i];
+      dydw += _mover_alpha * _mover_weights[i];
 
-      _mover_weight_velocities[i] = dydw * MOVER_MOMENTUM_DECAY
-        + _mover_weight_velocities[i] * (1.0 - MOVER_MOMENTUM_DECAY);
+      _mover_weight_velocities[i] = dydw * _mover_velocity_decay
+        + _mover_weight_velocities[i] * (1.0 - _mover_velocity_decay);
       
-      _mover_weight_norms[i] = sq(dydw) * MOVER_NORM_DECAY
-        + _mover_weight_norms[i] * (1.0 - MOVER_NORM_DECAY);
+      _mover_weight_norms[i] = sq(dydw) * _mover_norm_decay
+        + _mover_weight_norms[i] * (1.0 - _mover_norm_decay);
       
-      _mover_weights[i] -= (MOVER_LEARNING_RATE * _mover_weight_velocities[i])
+      _mover_weights[i] -= (_mover_learning_rate * _mover_weight_velocities[i])
         / sqrt(_mover_weight_norms[i]);
     }
 
-    _mover_bias_velocity = dydl * MOVER_MOMENTUM_DECAY
-      + _mover_bias_velocity * (1.0 - MOVER_MOMENTUM_DECAY);
+    _mover_bias_velocity = dydl * _mover_velocity_decay
+      + _mover_bias_velocity * (1.0 - _mover_velocity_decay);
 
-    _mover_bias_norm = sq(dydl) * MOVER_NORM_DECAY
-      + _mover_bias_norm * (1.0 - MOVER_NORM_DECAY);
+    _mover_bias_norm = sq(dydl) * _mover_norm_decay
+      + _mover_bias_norm * (1.0 - _mover_norm_decay);
 
-    _mover_bias -= (MOVER_LEARNING_RATE * _mover_bias_velocity)
+    _mover_bias -= (_mover_learning_rate * _mover_bias_velocity)
       / sqrt(_mover_bias_norm);
+
+    if (training_emitter.count() > 0) {
+      float loss = sq(_mover_prediction - delta);
+
+      doc["loss"] = loss;
+  
+      serializeJson(doc, buffer);
+
+      training_emitter.send(buffer, "mover-epoch-complete");
+    }
   }
 }
 

@@ -75,7 +75,7 @@
 <script lang="ts">
 import Vue from 'vue';
 import { FORWARD, REVERSE, LEFT, RIGHT } from '../constants';
-import bus from '../bus';
+import bus from '../providers/bus';
 
 export default Vue.extend({
     props: {

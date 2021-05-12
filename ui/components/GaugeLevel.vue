@@ -47,13 +47,13 @@ export default Vue.extend({
         batteryIndicator() : string {
             const p = this.sensors.battery.percentage;
 
-            if (p <= 5.0) {
+            if (p <= 5) {
                 return 'fa-battery-empty';
-            } else if (p > 5.0 && p <= 25.0) {
+            } else if (p > 5 && p <= 25) {
                 return 'fa-battery-quarter';
-            } else if (p > 25.0 && p <= 50.0) {
+            } else if (p > 25 && p <= 50) {
                 return 'fa-battery-half';
-            } else if (p > 50.0 && p <= 75.0) {
+            } else if (p > 50 && p <= 75) {
                 return 'fa-battery-three-quarters';
             } else {
                 return 'fa-battery-full';

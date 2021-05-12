@@ -4,6 +4,7 @@ import VueAxios from 'vue-axios';
 import VueSSE from 'vue-sse';
 import App from './App.vue';
 import MainNav from './components/MainNav.vue';
+import MainFooter from './components/MainFooter.vue';
 import DirectionPad from './components/DirectionPad.vue';
 import FeaturePanel from './components/FeaturePanel.vue';
 import GaugeLevel from './components/GaugeLevel.vue';
@@ -14,7 +15,7 @@ import RolloverDetected from './components/RolloverDetected.vue';
 import PageLoader from './components/PageLoader.vue';
 import { Workbox } from 'workbox-window';
 import routes from './routes';
-import bus from  './bus';
+import bus from  './providers/bus';
 
 require('./scss/app.scss');
 
@@ -54,6 +55,7 @@ const axios = require('axios');
 
 Vue.component('app', App);
 Vue.component('main-nav', MainNav);
+Vue.component('main-footer', MainFooter);
 Vue.component('direction-pad', DirectionPad);
 Vue.component('feature-panel', FeaturePanel);
 Vue.component('gauge-level', GaugeLevel);
