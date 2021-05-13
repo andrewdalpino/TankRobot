@@ -3,17 +3,101 @@
         <section class="section">
             <div class="container">
                 <div class="buttons">
-                    <button class="button is-medium is-outlined is-fullwidth" :class="robot.autonomy.enabled ? 'is-success' : 'is-danger'" @click="toggleAutonomy()">
-                        <span class="icon"><i class="fas fa-brain"></i></span><span>Autonomy</span>
+                    <button class="button is-medium is-outlined is-fullwidth" :class="autonomy.enabled ? 'is-success' : 'is-danger'" @click="toggleAutonomy()">
+                        Autonomy {{ autonomy.enabled ? 'Enabled' : 'Disabled' }}
                     </button>
                 </div>
             </div>
         </section>
         <section class="section">
-            <h2 class="title is-size-4"><span class="icon mr-3"><i class="fas fa-chart-line"></i></span>Training Losses</h2>
-            <figure class="image is-16by9">
-                <div id="training-loss-chart" class="has-ratio"></div>
-            </figure>
+            <div class="container">
+                <div class="field">
+                    <label class="label">Path Affinity</label>
+                    <div class="control">
+                        <input class="slider is-fullwidth is-large has-output"
+                            name="path-affinity"
+                            id="path-affinity-slider"
+                            type="range"
+                            min="1.0"
+                            max="3.0"
+                            step="0.1"
+                            v-model="autonomy.pathAffinity"
+                            @change="setPathAffinity()"
+                        />
+                        <output for="path-affinity-slider">{{ autonomy.pathAffinity }}</output>
+                    </div>
+                </div>
+                <div class="field">
+                    <label class="label">Max Overshoot</label>
+                    <div class="control">
+                        <input class="slider is-fullwidth is-large has-output"
+                            name="max-overshoot"
+                            id="max-overshoot-slider"
+                            type="range"
+                            min="0.0"
+                            max="1.0"
+                            step="0.1"
+                            v-model="autonomy.mover.maxOvershoot"
+                            @change="setMaxOvershoot()"
+                        />
+                        <output for="max-overshoot-slider">{{ autonomy.mover.maxOvershoot }}</output>
+                    </div>
+                </div>
+                <div class="field">
+                    <ValidationObserver v-slot="{ invalid }">
+                        <label class="label">Learning Rate</label>
+                        <ValidationProvider name="learning-rate" rules="required|double|min_value:0" v-slot="{ errors }">
+                            <div class="control">
+                                <input class="input is-fullwidth has-text-right"
+                                    name="learning-rate"
+                                    type="number"
+                                    min="0"
+                                    step="0.01"
+                                    :class="{ 'is-danger' : invalid }"
+                                    v-model="autonomy.mover.learningRate"
+                                    @change="setLearningRate()"
+                                />
+                            </div>
+                            <p class="help">{{ errors[0] }}</p>
+                        </ValidationProvider>
+                    </ValidationObserver>
+                </div>
+                <div class="field">
+                    <label class="label">Momentum</label>
+                    <div class="control">
+                        <input class="slider is-fullwidth is-large has-output"
+                            name="momentum"
+                            id="momentum-slider"
+                            type="range"
+                            min="0.0"
+                            max="1.0"
+                            step="0.1"
+                            v-model="autonomy.mover.momentum"
+                            @change="setMomentum()"
+                        />
+                        <output for="momentum-slider">{{ autonomy.mover.momentum }}</output>
+                    </div>
+                </div>
+                <div class="field">
+                    <ValidationObserver v-slot="{ invalid }">
+                        <label class="label">L2 Regularization</label>
+                        <ValidationProvider name="alpha" rules="required|double|min_value:0" v-slot="{ errors }">
+                            <div class="control">
+                                <input class="input is-fullwidth has-text-right"
+                                    name="alpha"
+                                    type="number"
+                                    min="0"
+                                    step="0.0001"
+                                    :class="{ 'is-danger' : invalid }"
+                                    v-model="autonomy.mover.alpha"
+                                    @change="setAlpha()"
+                                />
+                            </div>
+                            <p class="help">{{ errors[0] }}</p>
+                        </ValidationProvider>
+                    </ValidationObserver>
+                </div>
+            </div>
         </section>
         <page-loader :loading="loading"></page-loader>
     </div>
@@ -21,27 +105,29 @@
 
 <script lang="ts">
 import Vue from 'vue';
-import Plotly from '../providers/plotly';
 import bus from '../providers/bus';
-
-const DATASET_SIZE = 100;
 
 export default Vue.extend({
     data() {
         return {
-            robot: {
-                autonomy: {
-                    enabled: false,
-                }
+            autonomy: {
+                enabled: false,
+                pathAffinity: 2.0,
+                mover: {
+                    learningRate: 0.1,
+                    momentum: 0.9,
+                    alpha: 1e-4,
+                    maxOvershoot: 0.3,
+                },
             },
             loading: false,
         };
     },
     methods: {
         toggleAutonomy() : void {
-            if (this.robot.autonomy.enabled) {
-                this.$http.delete('/robot/features/autonomy').then(() => {
-                    this.robot.autonomy.enabled = false;
+            if (this.autonomy.enabled) {
+                this.$http.delete('/robot/autonomy').then(() => {
+                    this.autonomy.enabled = false;
 
                     bus.$emit('autonomy-disabled');
                 }).catch((error) => {
@@ -50,8 +136,8 @@ export default Vue.extend({
                     });
                 });
             } else {
-                this.$http.put('/robot/features/autonomy').then(() => {
-                    this.robot.autonomy.enabled = true;
+                this.$http.put('/robot/autonomy/enabled').then(() => {
+                    this.autonomy.enabled = true;
 
                     bus.$emit('autonomy-enabled');
                 }).catch((error) => {
@@ -61,84 +147,63 @@ export default Vue.extend({
                 });
             }
         },
+        setPathAffinity() : void {
+            this.$http.put('/robot/autonomy/path-affinity', {
+                pathAffinity: this.autonomy.pathAffinity,
+            }).catch((error) => {
+                bus.$emit('communication-error', {
+                    error,
+                });
+            });
+        },
+        setMaxOvershoot() : void {
+            this.$http.put('/robot/autonomy/mover/max-overshoot', {
+                maxOvershoot: this.autonomy.mover.maxOvershoot,
+            }).catch((error) => {
+                bus.$emit('communication-error', {
+                    error,
+                });
+            });
+        },
+        setLearningRate() : void {
+            this.$http.put('/robot/autonomy/mover/learning-rate', {
+                learningRate: this.autonomy.mover.learningRate,
+            }).catch((error) => {
+                bus.$emit('communication-error', {
+                    error,
+                });
+            });
+        },
+        setMomentum() : void {
+            this.$http.put('/robot/autonomy/mover/momentum', {
+                momentum: this.autonomy.mover.momentum,
+            }).catch((error) => {
+                bus.$emit('communication-error', {
+                    error,
+                });
+            });
+        },
+        setAlpha() : void {
+            this.$http.put('/robot/autonomy/mover/alpha', {
+                alpha: this.autonomy.mover.alpha,
+            }).catch((error) => {
+                bus.$emit('communication-error', {
+                    error,
+                });
+            });
+        },
     },
     mounted() {
         this.loading = true;
 
         this.$http.get('/robot').then((response) => {
-            this.robot.autonomy = response.data.robot.autonomy;
-
-            this.$sse('/events/robot/training', { format: 'json' }).then((sse) => {
-                sse.subscribe('mover-epoch-complete', (event) => {
-                    Plotly.extendTraces('training-loss-chart', {y: [[event.loss]]}, [0], DATASET_SIZE);
-                });
-            });
+            this.autonomy = response.data.robot.autonomy;
 
             this.loading = false;
         }).catch((error) => {
             bus.$emit('communication-error', {
                 error,
             });
-        });
-
-        Plotly.newPlot('training-loss-chart', [
-            {
-                name: 'Mover',
-                x: [...Array(DATASET_SIZE).keys()].reverse(),
-                y: Array(DATASET_SIZE).fill(0),
-                type: 'scatter',
-                line: {
-                    width: 2,
-                    color: 'rgb(184, 107, 255)',
-                },
-                fill: 'tozeroy',
-                fillcolor: 'rgba(184, 107, 255, 0.1)',
-            },
-        ], {
-            legend: {
-                orientation: 'h',
-                y: 1.2,
-            },
-            xaxis: {
-                title: {
-                    text: 'Epoch',
-                    font: {
-                        size: 12,
-                    },
-                },
-                type: 'linear',
-                autorange: 'reversed',
-                gridcolor: 'rgb(128, 128, 128)',
-            },
-            yaxis: {
-                title: {
-                    text: 'L2 Loss',
-                    font: {
-                        size: 12,
-                    },
-                },
-                type: 'linear',
-                rangemode: 'tozero',
-                gridcolor: 'rgb(128, 128, 128)',
-                fixedrange: true,
-            },
-            margin: {
-                l: 80,
-                r: 40,
-                t: 40,
-                b: 40,
-            },
-            paper_bgcolor: 'rgba(0, 0, 0, 0)',
-            plot_bgcolor: 'rgba(0, 0, 0, 0)',
-            modebar: {
-                color: 'rgb(128, 128, 128)',
-                activecolor: 'rgb(192, 192, 192)',
-                bgcolor: 'rgba(0, 0, 0, 0)',
-            },
-        }, {
-            responsive: true,
-            displaylogo: false,
-            displayModeBar: true,
         });
     },
 });

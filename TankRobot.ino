@@ -144,22 +144,20 @@ VL53L1X lidar;
 float _scan_angles[NUM_SCANS];
 int _distances_to_object[NUM_SCANS];
 uint8_t _scan_count;
-float _path_affinity = 2.0;
 
 Ticker scan_timer, collision_timer;
 
-float _mover_max_overshoot = 0.33;
-float _mover_learning_rate = 10.0;
-float _mover_velocity_decay = 0.1;
-float _mover_norm_decay = 0.001;
+float _path_affinity = 2.0;
+
+float _mover_learning_rate = 0.1;
+float _mover_momentum = 0.9;
 float _mover_alpha = 1e-4;
+float _mover_max_overshoot = 0.3;
 float _mover_features[4];
 float _mover_weights[4];
 float _mover_weight_velocities[4];
-float _mover_weight_norms[4];
 float _mover_bias;
 float _mover_bias_velocity;
-float _mover_bias_norm;
 float _mover_prediction;
 long _mover_start_timestamp;
 long _mover_end_timestamp;
@@ -256,6 +254,7 @@ void setupHttpServer() {
   server.serveStatic("/ui", SPIFFS, "/app.html");
   server.serveStatic("/ui/control", SPIFFS, "/app.html");
   server.serveStatic("/ui/autonomy", SPIFFS, "/app.html");
+  server.serveStatic("/ui/training-loss", SPIFFS, "/app.html");
   server.serveStatic("/manifest.json", SPIFFS, "/manifest.json");
   server.serveStatic("/app.js", SPIFFS, "/app.js");
   server.serveStatic("/sw.js", SPIFFS, "/sw.js");
@@ -275,13 +274,18 @@ void setupHttpServer() {
   server.on("/robot", HTTP_GET, handleGetRobot);
   server.on("/robot/motors", HTTP_DELETE, handleStop);
   server.on("/robot/features/beeper", HTTP_PUT, handleBeep);
-  server.on("/robot/features/autonomy", HTTP_PUT, handleExplore);
-  server.on("/robot/features/autonomy", HTTP_DELETE, handleStop);
+  server.on("/robot/autonomy/enabled", HTTP_PUT, handleExplore);
+  server.on("/robot/autonomy", HTTP_DELETE, handleStop);
 
   server.addHandler(new AsyncCallbackJsonWebHandler("/robot/motors/direction", handleChangeDirection));
   server.addHandler(new AsyncCallbackJsonWebHandler("/robot/motors/throttle", handleSetThrottlePercentage));
   server.addHandler(new AsyncCallbackJsonWebHandler("/robot/rotator/left", handleRotateLeft));
   server.addHandler(new AsyncCallbackJsonWebHandler("/robot/rotator/right", handleRotateRight));
+  server.addHandler(new AsyncCallbackJsonWebHandler("/robot/autonomy/path-affinity", handleSetPathAffinity));
+  server.addHandler(new AsyncCallbackJsonWebHandler("/robot/autonomy/mover/max-overshoot", handleSetMoverMaxOvershoot));
+  server.addHandler(new AsyncCallbackJsonWebHandler("/robot/autonomy/mover/learning-rate", handleSetMoverLearningRate));
+  server.addHandler(new AsyncCallbackJsonWebHandler("/robot/autonomy/mover/momentum", handleSetMoverMomentum));
+  server.addHandler(new AsyncCallbackJsonWebHandler("/robot/autonomy/mover/alpha", handleSetMoverAlpha));
 
   server.addHandler(&sensor_emitter);
   server.addHandler(&training_emitter);
@@ -399,9 +403,7 @@ void setupLidar() {
  * Set up the random number generator.
  */
 void setupRandom() {
-  unsigned long seed = analogRead(BATTERY_PIN) + abs(mpu.getTemperature());
-  
-  randomSeed(seed);
+  randomSeed(RANDOM_REG32);
   
   Serial.println("Seeded random number generator");
 }
@@ -508,18 +510,14 @@ int handleGetRobot(AsyncWebServerRequest *request) {
   JsonObject autonomy = robot.createNestedObject("autonomy");
 
   autonomy["enabled"] = isAutonomous();
-  
-  JsonObject scanner = autonomy.createNestedObject("scanner");
-
-  scanner["pathAffinity"] = _path_affinity;
+  autonomy["pathAffinity"] = _path_affinity;
 
   JsonObject mover = autonomy.createNestedObject("mover");
 
-  mover["maxOvershoot"] = _mover_max_overshoot;
   mover["learningRate"] = _mover_learning_rate;
-  mover["velocityDecay"] = _mover_velocity_decay;
-  mover["normDecay"] = _mover_norm_decay;
+  mover["momentum"] = _mover_momentum;
   mover["alpha"] = _mover_alpha;
+  mover["maxOvershoot"] = _mover_max_overshoot;
   
   serializeJson(doc, buffer);
 
@@ -650,6 +648,101 @@ void handleRotateRight(AsyncWebServerRequest *request, JsonVariant &json) {
 }
 
 /**
+ * Handle the set path affinity request.
+ */
+void handleSetPathAffinity(AsyncWebServerRequest *request, JsonVariant &json) {
+  const JsonObject& doc = json.as<JsonObject>();
+
+  if (!doc.containsKey("pathAffinity")) {
+    request->send(HTTP_UNPROCESSABLE_ENTITY);
+
+    return;
+  }
+
+  float pathAffinity = doc["pathAffinity"];
+
+  setPathAffinity(pathAffinity);
+
+  request->send(HTTP_OK);
+}
+
+/**
+ * Handle the set mover max overshoot request.
+ */
+void handleSetMoverMaxOvershoot(AsyncWebServerRequest *request, JsonVariant &json) {
+  const JsonObject& doc = json.as<JsonObject>();
+
+  if (!doc.containsKey("maxOvershoot")) {
+    request->send(HTTP_UNPROCESSABLE_ENTITY);
+
+    return;
+  }
+
+  float maxOvershoot = doc["maxOvershoot"];
+
+  setMoverMaxOvershoot(maxOvershoot);
+
+  request->send(HTTP_OK);
+}
+
+/**
+ * Handle the set mover learning rate request.
+ */
+void handleSetMoverLearningRate(AsyncWebServerRequest *request, JsonVariant &json) {
+  const JsonObject& doc = json.as<JsonObject>();
+
+  if (!doc.containsKey("learningRate")) {
+    request->send(HTTP_UNPROCESSABLE_ENTITY);
+
+    return;
+  }
+
+  float learningRate = doc["learningRate"];
+
+  setMoverLearningRate(learningRate);
+
+  request->send(HTTP_OK);
+}
+
+/**
+ * Handle the set mover momentum request.
+ */
+void handleSetMoverMomentum(AsyncWebServerRequest *request, JsonVariant &json) {
+  const JsonObject& doc = json.as<JsonObject>();
+
+  if (!doc.containsKey("momentum")) {
+    request->send(HTTP_UNPROCESSABLE_ENTITY);
+
+    return;
+  }
+
+  float momentum = doc["momentum"];
+
+  setMoverMomentum(momentum);
+
+  request->send(HTTP_OK);
+}
+
+/**
+ * Handle the set mover L2 regularization parameter.
+ */
+void handleSetMoverAlpha(AsyncWebServerRequest *request, JsonVariant &json) {
+  const JsonObject& doc = json.as<JsonObject>();
+
+  if (!doc.containsKey("alpha")) {
+    request->send(HTTP_UNPROCESSABLE_ENTITY);
+
+    return;
+  }
+
+  float alpha = doc["alpha"];
+
+  setMoverAlpha(alpha);
+
+  request->send(HTTP_OK);
+}
+
+/**
  * Catch all route responds with 404.
  */
 int handleNotFound(AsyncWebServerRequest *request) {
@@ -768,6 +861,41 @@ void setThrottlePercentage(int throttle) {
     analogWrite(MOTOR_A_THROTTLE_PIN, _throttle);
     analogWrite(MOTOR_B_THROTTLE_PIN, _throttle);
   }
+}
+
+/**
+ * Set the path affinity.
+ */
+void setPathAffinity(float pathAffinity) {
+  _path_affinity = constrain(pathAffinity, 1.0, 3.0);
+}
+
+/**
+ * Set the mover max overshoot.
+ */
+void setMoverMaxOvershoot(float maxOvershoot) {
+  _mover_max_overshoot = constrain(maxOvershoot, 0.0, 1.0);
+}
+
+/**
+ * Set the mover learning rate.
+ */
+void setMoverLearningRate(float learningRate) {
+  _mover_learning_rate = fmax(0.0, learningRate);
+}
+
+/**
+ * Set mover momentum amount.
+ */
+void setMoverMomentum(float momentum) {
+  _mover_momentum = constrain(momentum, 0.0, 1.0);
+}
+
+/**
+ * Set the mover L@ regularization term.
+ */
+void setMoverAlpha(float alpha) {
+  _mover_alpha = fmax(0.0, alpha);
 }
 
 /**
@@ -1024,41 +1152,33 @@ void mover() {
   
   long now = millis();
 
-  if (now > _mover_end_timestamp || distanceToObject() < COLLISION_THRESHOLD) {
+  if (distanceToObject() < COLLISION_THRESHOLD || now > _mover_end_timestamp) {
     brake();
-
-    mover_timer.detach();
 
     float delta = now - _mover_start_timestamp;
 
     float dydl = _mover_prediction - delta;
 
-    float dydw;
-
     for (uint8_t i = 0; i < 4; i++) {
-      dydw = dydl * _mover_features[i];
+      float dydw = dydl * _mover_features[i];
       
       dydw += _mover_alpha * _mover_weights[i];
 
-      _mover_weight_velocities[i] = dydw * _mover_velocity_decay
-        + _mover_weight_velocities[i] * (1.0 - _mover_velocity_decay);
-      
-      _mover_weight_norms[i] = sq(dydw) * _mover_norm_decay
-        + _mover_weight_norms[i] * (1.0 - _mover_norm_decay);
-      
-      _mover_weights[i] -= (_mover_learning_rate * _mover_weight_velocities[i])
-        / sqrt(_mover_weight_norms[i]);
+      _mover_weight_velocities[i] = _mover_learning_rate * dydw
+        + _mover_momentum * _mover_weight_velocities[i];
+
+      _mover_weights[i] -= _mover_learning_rate * dydw
+        + _mover_momentum * _mover_weight_velocities[i];
     }
 
-    _mover_bias_velocity = dydl * _mover_velocity_decay
-      + _mover_bias_velocity * (1.0 - _mover_velocity_decay);
+    float dydb = dydl;
 
-    _mover_bias_norm = sq(dydl) * _mover_norm_decay
-      + _mover_bias_norm * (1.0 - _mover_norm_decay);
+    _mover_bias_velocity = _mover_learning_rate * dydb
+      + _mover_momentum * _mover_bias_velocity;
 
-    _mover_bias -= (_mover_learning_rate * _mover_bias_velocity)
-      / sqrt(_mover_bias_norm);
-
+    _mover_bias -= _mover_learning_rate * dydb
+      + _mover_momentum * _mover_bias_velocity;
+    
     if (training_emitter.count() > 0) {
       float loss = sq(_mover_prediction - delta);
 
@@ -1068,6 +1188,8 @@ void mover() {
 
       training_emitter.send(buffer, "mover-epoch-complete");
     }
+
+    mover_timer.detach();
   }
 }
 

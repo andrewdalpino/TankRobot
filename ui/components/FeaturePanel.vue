@@ -11,12 +11,6 @@ import Vue from  'vue';
 import bus from '../providers/bus';
 
 export default Vue.extend({
-    props: {
-        features: {
-            type: Object,
-            required: true,
-        }
-    },
     methods: {
         beep() : void {
             this.$http.put('/robot/features/beeper').catch((error) => {

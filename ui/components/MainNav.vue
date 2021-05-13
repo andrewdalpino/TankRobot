@@ -13,13 +13,19 @@
                 <div class="navbar-item">
                     <router-link :to="{ name: 'control' }" class="navbar-item" @click.native="open = false">
                         <span class="icon"><i class="fas fa-arrows-alt"></i></span>
-                        <span>Controls</span>
+                        <span>Control</span>
                     </router-link>
                 </div>
                 <div class="navbar-item">
                     <router-link :to="{ name: 'autonomy' }" class="navbar-item" @click.native="open = false">
                         <span class="icon"><i class="fas fa-brain"></i></span>
                         <span>Autonomy</span>
+                    </router-link>
+                </div>
+                <div class="navbar-item">
+                    <router-link :to="{ name: 'training-loss' }" class="navbar-item" @click.native="open = false">
+                        <span class="icon"><i class="fas fa-chart-line"></i></span>
+                        <span>Training Loss</span>
                     </router-link>
                 </div>
             </div>

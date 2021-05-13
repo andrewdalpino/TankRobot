@@ -13,6 +13,8 @@ import BatteryUndervoltage from  './components/BatteryUndervoltage.vue';
 import CommunicationError from  './components/CommunicationError.vue';
 import RolloverDetected from './components/RolloverDetected.vue';
 import PageLoader from './components/PageLoader.vue';
+import { ValidationProvider, ValidationObserver, extend } from 'vee-validate';
+import { required, double, min_value } from 'vee-validate/dist/rules';
 import { Workbox } from 'workbox-window';
 import routes from './routes';
 import bus from  './providers/bus';
@@ -64,6 +66,24 @@ Vue.component('battery-undervoltage', BatteryUndervoltage);
 Vue.component('communication-error', CommunicationError);
 Vue.component('rollover-detected', RolloverDetected);
 Vue.component('page-loader', PageLoader);
+
+extend('required', {
+    ...required,
+    message: 'This field is required.',
+});
+
+extend('double', {
+    ...double,
+    message: 'Value must be a floating point number.',
+});
+
+extend('min_value', {
+    ...min_value,
+    message: 'Value must be greater than {min}.',
+});
+
+Vue.component('ValidationProvider', ValidationProvider);
+Vue.component('ValidationObserver', ValidationObserver);
 
 Vue.use(VueRouter);
 Vue.use(VueAxios, axios);

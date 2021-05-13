@@ -119,8 +119,6 @@ export default Vue.extend({
             if (!this.isLeft) {
                 this.$http.put('/robot/rotator/left', {
                     radians: 45.0 * (Math.PI / 180),
-                }).then((response) => {
-                    //
                 }).catch((error) => {
                     bus.$emit('communication-error', {
                         error,
@@ -145,8 +143,6 @@ export default Vue.extend({
             if (!this.isLeft) {
                 this.$http.put('/robot/rotator/right', {
                     radians: 45.0 * (Math.PI / 180),
-                }).then((response) => {
-                    //
                 }).catch((error) => {
                     bus.$emit('communication-error', {
                         error,

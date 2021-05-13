@@ -1,5 +1,6 @@
 import Control from './pages/Control.vue';
 import Autonomy from './pages/Autonomy.vue';
+import TrainingLoss from './pages/TrainingLoss.vue';
 
 export default [
     {
@@ -16,5 +17,10 @@ export default [
         name: 'autonomy',
         path: '/autonomy',
         component: Autonomy,
+    },
+    {
+        name: 'training-loss',
+        path: '/training-loss',
+        component: TrainingLoss,
     },
 ];
