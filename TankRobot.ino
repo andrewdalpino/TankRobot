@@ -37,7 +37,7 @@
 #define MOTOR_A_THROTTLE_PIN 5
 #define MOTOR_B_DIRECTION_PIN 2
 #define MOTOR_B_THROTTLE_PIN 4
-#define MIN_THROTTLE 700
+#define MIN_THROTTLE 800
 #define MAX_THROTTLE 1000
 
 #define FORWARD 1
@@ -85,7 +85,7 @@
 
 #define EXPLORE_SAMPLE_RATE 500
 
-#define SCAN_SAMPLE_RATE 100
+#define SCAN_SAMPLE_RATE LIDAR_SAMPLE_RATE
 #define SCAN_WINDOW M_PI
 #define NUM_SCANS 4
 
@@ -115,7 +115,7 @@ float _battery_voltage;
 
 Ticker battery_timer;
 
-int _throttle = 850;
+int _throttle = 900;
 uint8_t _direction = FORWARD;
 bool _stopped = true;
 
@@ -143,24 +143,26 @@ VL53L1X lidar;
 
 float _scan_angles[NUM_SCANS];
 int _distances_to_object[NUM_SCANS];
+float _average_distance_to_object;
 uint8_t _scan_count;
 
 Ticker scan_timer, collision_timer;
 
 float _path_affinity = 2.0;
 
-float _mover_learning_rate = 0.1;
+float _mover_learning_rate = 0.01;
 float _mover_momentum = 0.9;
 float _mover_alpha = 1e-4;
 float _mover_max_overshoot = 0.3;
-float _mover_features[4];
-float _mover_weights[4];
-float _mover_weight_velocities[4];
+float _mover_features[5];
+float _mover_weights[5];
+float _mover_weight_velocities[5];
 float _mover_bias;
 float _mover_bias_velocity;
 float _mover_prediction;
 long _mover_start_timestamp;
 long _mover_end_timestamp;
+unsigned int _mover_epoch;
 
 Ticker mover_timer;
 
@@ -254,7 +256,7 @@ void setupHttpServer() {
   server.serveStatic("/ui", SPIFFS, "/app.html");
   server.serveStatic("/ui/control", SPIFFS, "/app.html");
   server.serveStatic("/ui/autonomy", SPIFFS, "/app.html");
-  server.serveStatic("/ui/training-loss", SPIFFS, "/app.html");
+  server.serveStatic("/ui/training", SPIFFS, "/app.html");
   server.serveStatic("/manifest.json", SPIFFS, "/manifest.json");
   server.serveStatic("/app.js", SPIFFS, "/app.js");
   server.serveStatic("/sw.js", SPIFFS, "/sw.js");
@@ -271,11 +273,11 @@ void setupHttpServer() {
   server.serveStatic("/fonts/fa-solid-900.woff", SPIFFS, "/fonts/fa-solid-900.woff");
   server.serveStatic("/sounds/plucky.ogg", SPIFFS, "/sounds/plucky.ogg");
 
-  server.on("/robot", HTTP_GET, handleGetRobot);
   server.on("/robot/motors", HTTP_DELETE, handleStop);
   server.on("/robot/features/beeper", HTTP_PUT, handleBeep);
   server.on("/robot/autonomy/enabled", HTTP_PUT, handleExplore);
   server.on("/robot/autonomy", HTTP_DELETE, handleStop);
+  server.on("/robot", HTTP_GET, handleGetRobot);
 
   server.addHandler(new AsyncCallbackJsonWebHandler("/robot/motors/direction", handleChangeDirection));
   server.addHandler(new AsyncCallbackJsonWebHandler("/robot/motors/throttle", handleSetThrottlePercentage));
@@ -322,6 +324,8 @@ void setupMotors() {
 
   analogWriteFreq(MAX_THROTTLE);
 
+  brake();
+
   Serial.println("Motors enabled");
 }
 
@@ -330,6 +334,7 @@ void setupMotors() {
  */
 void setupI2C() {
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+  
   Wire.setClock(I2C_CLOCK);
 
   Serial.println("I2C bus initialized");
@@ -412,9 +417,16 @@ void setupRandom() {
  * Set up the mover model.
  */
 void setupMover() {
-  for (uint8_t i = 0; i < 4; i++) {
+  for (uint8_t i = 0; i < 5; i++) {
     _mover_weights[i] = random(-MAX_RAND_INT, MAX_RAND_INT) / (float) MAX_RAND_INT;
+    
+    _mover_weight_velocities[i] = 0.0;
   }
+
+  _mover_bias = 0.0;
+  _mover_bias_velocity = 0.0;
+
+  _mover_epoch = 1;
   
   Serial.println("Mover model initialized");
 }
@@ -484,11 +496,11 @@ void loop() {
 }
 
 /**
- * Handle a get robot request.
+ * Handle a get robot info request.
  */
 int handleGetRobot(AsyncWebServerRequest *request) {
-  StaticJsonDocument<512> doc;
-  char buffer[512];
+  StaticJsonDocument<1024> doc;
+  char buffer[1024];
 
   JsonObject robot = doc.createNestedObject("robot");
 
@@ -518,6 +530,14 @@ int handleGetRobot(AsyncWebServerRequest *request) {
   mover["momentum"] = _mover_momentum;
   mover["alpha"] = _mover_alpha;
   mover["maxOvershoot"] = _mover_max_overshoot;
+
+  JsonObject importances = mover.createNestedObject("importances");
+
+  importances["throttle"] = fabs(_mover_weights[0]);
+  importances["battery"] = fabs(_mover_weights[1]);
+  importances["pitch"] = fabs(_mover_weights[2]);
+  importances["distance"] = fabs(_mover_weights[3]);
+  importances["averageDistance"] = fabs(_mover_weights[4]);
   
   serializeJson(doc, buffer);
 
@@ -835,20 +855,23 @@ void stop() {
   _stopped = true;
   
   explore_timer.detach();
+  rotator_timer.detach();
+  scan_timer.detach();
+  mover_timer.detach();
 }
 
 /**
  * Returns the battery voltage as a percentage.
  */
-int batteryPercentage() {
-  return map(_battery_voltage, MIN_VOLTAGE, MAX_VOLTAGE, 0, 100);
+float batteryPercentage() {
+  return (_battery_voltage - MIN_VOLTAGE) / (MAX_VOLTAGE - MIN_VOLTAGE) * 100.0;
 }
 
 /**
  * Returns the throttle position as a percentage.
  */
-int throttlePercentage() {
-  return map(_throttle, MIN_THROTTLE, MAX_THROTTLE, 0, 100);
+float throttlePercentage() {
+  return (_throttle - MIN_THROTTLE) / (float) (MAX_THROTTLE - MIN_THROTTLE) * 100.0;
 }
 
 /**
@@ -954,7 +977,9 @@ void rotator() {
 
   float alpha = min(fabs(theta) / M_PI, 1.0);
 
-  unsigned int rotator_throttle = max(MIN_THROTTLE, (int) round(alpha * _throttle));
+  int rotator_throttle = round(alpha * _throttle);
+
+  rotator_throttle = max(MIN_THROTTLE, rotator_throttle);
 
   if (theta < 0.0) {
     if (_direction != LEFT) {
@@ -1062,6 +1087,14 @@ void scanner() {
     if (_scan_count < NUM_SCANS) {
       rotateLeft(SCAN_WINDOW / (NUM_SCANS - 1));
     } else {
+      float sigma = 0.0;
+      
+      for (uint8_t i = 0; i < NUM_SCANS; ++i) {
+         sigma += _distances_to_object[i];
+      }
+      
+      _average_distance_to_object = sigma / NUM_SCANS;
+      
       scan_timer.detach();
     }
   }
@@ -1072,9 +1105,11 @@ void scanner() {
  */
 void choosePath() {
   long weights[NUM_SCANS];
+
+  float scale = 2.0 / (NUM_SCANS * _path_affinity);
   
   for (uint8_t i = 0; i < NUM_SCANS; i++) {
-    weights[i] = round(pow(_distances_to_object[i], _path_affinity));
+    weights[i] = round(pow(scale * _distances_to_object[i], _path_affinity));
   }
   
   long total = 0;
@@ -1083,14 +1118,14 @@ void choosePath() {
     total += weights[i];
   }
  
-  long rho = random(0, total);
+  long threshold = random(0, total);
 
   float delta;
   
   for (uint8_t i = 0; i < NUM_SCANS; i++) {
-    rho -= weights[i];
+    threshold -= weights[i];
 
-    if (rho <= 0) {
+    if (threshold <= 0) {
       delta = calculateAngleDelta(_heading, _scan_angles[i]);
             
       break;
@@ -1108,10 +1143,11 @@ void move() {
   _mover_features[1] = batteryPercentage() / 100.0;
   _mover_features[2] = _pitch / HALF_PI;
   _mover_features[3] = distanceToObject() / (float) LIDAR_MAX_RANGE;
+  _mover_features[4] = _average_distance_to_object / LIDAR_MAX_RANGE;
 
   float delta = 0.0;
 
-  for (uint8_t i = 0; i < 4; i++) {
+  for (uint8_t i = 0; i < 5; i++) {
     delta += _mover_features[i] * _mover_weights[i];
   }
 
@@ -1146,10 +1182,7 @@ void move() {
 /**
  * Control loop to displace the vehicle in the x axis.
  */
-void mover() {
-  StaticJsonDocument<64> doc;
-  char buffer[64];
-  
+void mover() {  
   long now = millis();
 
   if (distanceToObject() < COLLISION_THRESHOLD || now > _mover_end_timestamp) {
@@ -1159,7 +1192,7 @@ void mover() {
 
     float dydl = _mover_prediction - delta;
 
-    for (uint8_t i = 0; i < 4; i++) {
+    for (uint8_t i = 0; i < 5; i++) {
       float dydw = dydl * _mover_features[i];
       
       dydw += _mover_alpha * _mover_weights[i];
@@ -1180,14 +1213,28 @@ void mover() {
       + _mover_momentum * _mover_bias_velocity;
     
     if (training_emitter.count() > 0) {
+      StaticJsonDocument<256> doc;
+      char buffer[256];
+  
       float loss = sq(_mover_prediction - delta);
 
+      doc["epoch"] = _mover_epoch;
       doc["loss"] = loss;
+      
+      JsonObject importances = doc.createNestedObject("importances");
+
+      importances["throttle"] = fabs(_mover_weights[0]);
+      importances["battery"] = fabs(_mover_weights[1]);
+      importances["pitch"] = fabs(_mover_weights[2]);
+      importances["distance"] = fabs(_mover_weights[3]);
+      importances["averageDistance"] = fabs(_mover_weights[4]);
   
       serializeJson(doc, buffer);
 
       training_emitter.send(buffer, "mover-epoch-complete");
     }
+
+    ++_mover_epoch;
 
     mover_timer.detach();
   }
@@ -1230,7 +1277,9 @@ void stabilize() {
 
   float beta = min(fabs(theta) / M_PI, 1.0);
 
-  int backoff_throttle = max(MIN_THROTTLE, (int) round((1.0 - beta) * _throttle));
+  int backoff_throttle = round((1.0 - beta) * _throttle);
+
+  backoff_throttle = max(MIN_THROTTLE, backoff_throttle);
 
   if (theta < 0.0) {
     switch (_direction) {
