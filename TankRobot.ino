@@ -57,6 +57,11 @@
 #define GRAVITY_SAMPLE_RATE 10
 #define ORIENTATION_SAMPLE_RATE 10
 #define ACCEL_CALIBRATION_LOOPS 8
+#define ACCEL_SAMPLE_RATE 10
+#define ACCEL_LSB_PER_G 16384.0
+#define VELOCITY_SAMPLE_RATE ACCEL_SAMPLE_RATE
+#define VELOCITY_ZUPT_THRESHOLD 0.1
+#define DISPLACEMENT_SAMPLE_RATE VELOCITY_SAMPLE_RATE
 #define TEMPERATURE_SAMPLE_RATE 1000
 #define TEMPERATURE_SENSITIVITY 340.0
 #define TEMPERATURE_CONSTANT 36.53
@@ -122,7 +127,11 @@ bool _stopped = true;
 MPU6050 mpu(MPU_ADDRESS);
 
 Quaternion _q;
+VectorInt16 _aa;
 VectorFloat _gravity;
+VectorFloat _acceleration, _prev_acceleration;
+VectorFloat _velocity, _prev_velocity;
+VectorFloat _displacement;
 float _heading, _pitch, _roll;
 float _heading_lock, _temperature;
 uint8_t _dmp_fifo_buffer[64];
@@ -131,6 +140,7 @@ volatile bool _dmp_ready = false;
 void ICACHE_RAM_ATTR dmpDataReady();
 
 Ticker gravity_timer, orientation_timer;
+Ticker acceleration_timer, velocity_timer, displacement_timer;
 Ticker temperature_timer;
 
 float _rotator_prev_delta, _rotator_delta_integral;
@@ -380,6 +390,9 @@ void setupMPU() {
 
   gravity_timer.attach_ms(GRAVITY_SAMPLE_RATE, updateGravity);
   orientation_timer.attach_ms(ORIENTATION_SAMPLE_RATE, updateOrientation);
+  acceleration_timer.attach_ms(ACCEL_SAMPLE_RATE, updateAcceleration);
+  velocity_timer.attach_ms(VELOCITY_SAMPLE_RATE, updateVelocity);
+  displacement_timer.attach_ms(DISPLACEMENT_SAMPLE_RATE, updateDisplacement);
   temperature_timer.attach_ms(TEMPERATURE_SAMPLE_RATE, updateTemperature);
 
   Serial.println("DMP initialized");
@@ -489,10 +502,18 @@ void loop() {
       }
 
       mpu.dmpGetQuaternion(&_q, _dmp_fifo_buffer);
+      
+      mpu.dmpGetAccel(&_aa, _dmp_fifo_buffer);
     }
 
     _dmp_ready = false;
   }
+
+  Serial.print(_displacement.x, 3);
+  Serial.print("\t");
+  Serial.print(_displacement.y, 3);
+  Serial.print("\t");
+  Serial.println(_displacement.z, 3);
 }
 
 /**
@@ -825,10 +846,14 @@ void reverse() {
 /**
  * Engage the motors.
  */
-void go() {    
+void go() {  
   _stopped = false;
 
   enableRolloverDetection();
+
+  _displacement.x = 0.0;
+  _displacement.y = 0.0;
+  _displacement.z = 0.0;
 
   analogWrite(MOTOR_A_THROTTLE_PIN, _throttle);
   analogWrite(MOTOR_B_THROTTLE_PIN, _throttle);
@@ -1168,7 +1193,7 @@ void move() {
   _mover_end_timestamp = now + burn_time;
 
   _direction = FORWARD;
-
+  
   mover_timer.attach_ms(MOVER_SAMPLE_RATE, mover);
 
   enableStabilizer();
@@ -1461,6 +1486,56 @@ void updateOrientation() {
   _pitch = atan2(_gravity.x, sqrt(sq(_gravity.y) + sq(_gravity.z)));
   
   _roll = atan2(_gravity.y, _gravity.z);
+}
+
+/**
+ * Update the current acceleration in m/sec ^ 2 of the vehicle with gravity vector removed.
+ */
+void updateAcceleration() {
+  _acceleration.x = -(_aa.x / ACCEL_LSB_PER_G);
+  _acceleration.y = (_aa.y / ACCEL_LSB_PER_G);
+  _acceleration.z = -(_aa.z / ACCEL_LSB_PER_G);
+
+  _acceleration.x -= _gravity.x;
+  _acceleration.y -= _gravity.y;
+  _acceleration.z -= _gravity.z;
+}
+
+/**
+ * Update the vehicle velocity in m/sec by integrating acceleration.
+ */
+void updateVelocity() {
+  if (isMoving()) {
+    _velocity.x += 0.5 * (_acceleration.x + _prev_acceleration.x);
+    _velocity.y += 0.5 * (_acceleration.y + _prev_acceleration.y);
+    _velocity.z += 0.5 * (_acceleration.z + _prev_acceleration.z);
+  } else {
+    _velocity.x = 0.0;
+    _velocity.y = 0.0;
+    _velocity.z = 0.0;
+  }
+
+  _prev_acceleration = _acceleration;
+}
+
+/**
+ * Update the vehicle displacement in meters by integrating velocity.
+ */
+void updateDisplacement() {
+  _displacement.x += 0.5 * (_velocity.x + _prev_velocity.x);
+  _displacement.y += 0.5 * (_velocity.y + _prev_velocity.y);
+  _displacement.z += 0.5 * (_velocity.z + _prev_velocity.z);
+
+  _prev_velocity = _velocity;
+}
+
+/**
+ * Is the vehicle in motion?
+ */
+bool isMoving() {
+  float norm = sqrt(sq(_acceleration.x) + sq(_acceleration.y) + sq(_acceleration.z));
+
+  return norm > VELOCITY_ZUPT_THRESHOLD;
 }
 
 /**
