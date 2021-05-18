@@ -54,14 +54,12 @@
 #define MPU_MAX_FIFO_COUNT 1024
 #define LOW_PASS_FILTER_MODE 3
 #define GYRO_CALIBRATION_LOOPS 8
-#define GRAVITY_SAMPLE_RATE 10
-#define ORIENTATION_SAMPLE_RATE 10
+#define GRAVITY_SAMPLE_RATE 20
+#define ORIENTATION_SAMPLE_RATE 20
 #define ACCEL_CALIBRATION_LOOPS 8
-#define ACCEL_SAMPLE_RATE 10
+#define ACCEL_SAMPLE_RATE 50
 #define ACCEL_LSB_PER_G 16384.0
-#define VELOCITY_SAMPLE_RATE ACCEL_SAMPLE_RATE
-#define VELOCITY_ZUPT_THRESHOLD 0.1
-#define DISPLACEMENT_SAMPLE_RATE VELOCITY_SAMPLE_RATE
+#define MOVEMENT_NORM_THRESHOLD 0.1
 #define TEMPERATURE_SAMPLE_RATE 1000
 #define TEMPERATURE_SENSITIVITY 340.0
 #define TEMPERATURE_CONSTANT 36.53
@@ -129,18 +127,16 @@ MPU6050 mpu(MPU_ADDRESS);
 Quaternion _q;
 VectorInt16 _aa;
 VectorFloat _gravity;
-VectorFloat _acceleration, _prev_acceleration;
-VectorFloat _velocity, _prev_velocity;
-VectorFloat _displacement;
+VectorFloat _acceleration;
 float _heading, _pitch, _roll;
 float _heading_lock, _temperature;
+unsigned long _prev_velocity_timestamp;
 uint8_t _dmp_fifo_buffer[64];
 uint16_t _dmp_packet_size;
 volatile bool _dmp_ready = false;
 void ICACHE_RAM_ATTR dmpDataReady();
 
-Ticker gravity_timer, orientation_timer;
-Ticker acceleration_timer, velocity_timer, displacement_timer;
+Ticker gravity_timer, orientation_timer, acceleration_timer;
 Ticker temperature_timer;
 
 float _rotator_prev_delta, _rotator_delta_integral;
@@ -152,7 +148,7 @@ Ticker rollover_timer;
 VL53L1X lidar;
 
 float _scan_angles[NUM_SCANS];
-int _distances_to_object[NUM_SCANS];
+unsigned int _distances_to_object[NUM_SCANS];
 float _average_distance_to_object;
 uint8_t _scan_count;
 
@@ -170,9 +166,9 @@ float _mover_weight_velocities[5];
 float _mover_bias;
 float _mover_bias_velocity;
 float _mover_prediction;
-long _mover_start_timestamp;
-long _mover_end_timestamp;
-unsigned int _mover_epoch;
+unsigned long _mover_start_timestamp;
+unsigned long _mover_end_timestamp;
+unsigned int _mover_epoch = 1;
 
 Ticker mover_timer;
 
@@ -391,8 +387,6 @@ void setupMPU() {
   gravity_timer.attach_ms(GRAVITY_SAMPLE_RATE, updateGravity);
   orientation_timer.attach_ms(ORIENTATION_SAMPLE_RATE, updateOrientation);
   acceleration_timer.attach_ms(ACCEL_SAMPLE_RATE, updateAcceleration);
-  velocity_timer.attach_ms(VELOCITY_SAMPLE_RATE, updateVelocity);
-  displacement_timer.attach_ms(DISPLACEMENT_SAMPLE_RATE, updateDisplacement);
   temperature_timer.attach_ms(TEMPERATURE_SAMPLE_RATE, updateTemperature);
 
   Serial.println("DMP initialized");
@@ -432,14 +426,7 @@ void setupRandom() {
 void setupMover() {
   for (uint8_t i = 0; i < 5; i++) {
     _mover_weights[i] = random(-MAX_RAND_INT, MAX_RAND_INT) / (float) MAX_RAND_INT;
-    
-    _mover_weight_velocities[i] = 0.0;
   }
-
-  _mover_bias = 0.0;
-  _mover_bias_velocity = 0.0;
-
-  _mover_epoch = 1;
   
   Serial.println("Mover model initialized");
 }
@@ -508,12 +495,6 @@ void loop() {
 
     _dmp_ready = false;
   }
-
-  Serial.print(_displacement.x, 3);
-  Serial.print("\t");
-  Serial.print(_displacement.y, 3);
-  Serial.print("\t");
-  Serial.println(_displacement.z, 3);
 }
 
 /**
@@ -851,10 +832,6 @@ void go() {
 
   enableRolloverDetection();
 
-  _displacement.x = 0.0;
-  _displacement.y = 0.0;
-  _displacement.z = 0.0;
-
   analogWrite(MOTOR_A_THROTTLE_PIN, _throttle);
   analogWrite(MOTOR_B_THROTTLE_PIN, _throttle);
 }
@@ -1058,7 +1035,7 @@ bool isAutonomous() {
 void explorer() {
   bool ready = !scan_timer.active() && !mover_timer.active() && !rotator_timer.active();
   
-  if (ready) {
+  if (ready && !isMoving()) {
     switch (_explorer_step) {
       case 0: {
         scanEnvironment();
@@ -1178,17 +1155,17 @@ void move() {
 
   delta += _mover_bias;
 
-  long now = millis();
+  unsigned long now = millis();
 
   _mover_prediction = delta;
 
   _mover_start_timestamp = now;
 
-  long max_overshoot = round(_mover_max_overshoot * fabs(delta));
+  unsigned long max_overshoot = round(_mover_max_overshoot * fabs(delta));
 
-  long overshoot = random(0, max_overshoot);
+  unsigned long overshoot = random(0, max_overshoot);
 
-  long burn_time = round(fmax(0.0, delta + overshoot));
+  unsigned long burn_time = round(fmax(0.0, delta + overshoot));
   
   _mover_end_timestamp = now + burn_time;
 
@@ -1207,8 +1184,8 @@ void move() {
 /**
  * Control loop to displace the vehicle in the x axis.
  */
-void mover() {  
-  long now = millis();
+void mover() {
+  unsigned long now = millis();
 
   if (distanceToObject() < COLLISION_THRESHOLD || now > _mover_end_timestamp) {
     brake();
@@ -1473,7 +1450,9 @@ void silenceBeeper(uint8_t remaining) {
  */
 void updateGravity() {
   _gravity.x = -2.0 * (_q.x * _q.z - _q.w * _q.y);
+  
   _gravity.y = 2.0 * (_q.w * _q.x + _q.y * _q.z);
+  
   _gravity.z = -(sq(_q.w) - sq(_q.x) -sq(_q.y) + sq(_q.z));
 }
 
@@ -1502,46 +1481,18 @@ void updateAcceleration() {
 }
 
 /**
- * Update the vehicle velocity in m/sec by integrating acceleration.
- */
-void updateVelocity() {
-  if (isMoving()) {
-    _velocity.x += 0.5 * (_acceleration.x + _prev_acceleration.x);
-    _velocity.y += 0.5 * (_acceleration.y + _prev_acceleration.y);
-    _velocity.z += 0.5 * (_acceleration.z + _prev_acceleration.z);
-  } else {
-    _velocity.x = 0.0;
-    _velocity.y = 0.0;
-    _velocity.z = 0.0;
-  }
-
-  _prev_acceleration = _acceleration;
-}
-
-/**
- * Update the vehicle displacement in meters by integrating velocity.
- */
-void updateDisplacement() {
-  _displacement.x += 0.5 * (_velocity.x + _prev_velocity.x);
-  _displacement.y += 0.5 * (_velocity.y + _prev_velocity.y);
-  _displacement.z += 0.5 * (_velocity.z + _prev_velocity.z);
-
-  _prev_velocity = _velocity;
-}
-
-/**
  * Is the vehicle in motion?
  */
 bool isMoving() {
   float norm = sqrt(sq(_acceleration.x) + sq(_acceleration.y) + sq(_acceleration.z));
 
-  return norm > VELOCITY_ZUPT_THRESHOLD;
+  return norm > MOVEMENT_NORM_THRESHOLD;
 }
 
 /**
  * Return the distance to object using the narrow beam.
  */
-int distanceToObject() {
+unsigned int distanceToObject() {
   int distance;
     
   switch (lidar.ranging_data.range_status) {
