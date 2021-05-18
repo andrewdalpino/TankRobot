@@ -2,7 +2,13 @@
     <div class="level is-mobile">
         <div class="level-item has-text-centered">
             <div>
-                <p class="heading is-size-7">{{ sensors.temperature.toFixed(1) }}°</p>
+                <p class="heading is-size-7">{{ acuityPercentage.toFixed(0) }}%</p>
+                <span class="icon is-large"><i class="fas fa-2x" :class="acuityIndicator"></i></span>
+            </div>
+        </div>
+        <div class="level-item has-text-centered">
+            <div>
+                <p class="heading is-size-7">{{ temperatureFahrenheit.toFixed(1) }}°</p>
                 <span class="icon is-large"><i class="fas fa-2x" :class="temperatureIndicator"></i></span>
             </div>
         </div>
@@ -23,9 +29,6 @@
 
 <script lang="ts">
 import Vue from 'vue';
-
-const LOW_TEMP_THRESHOLD = 5.0;
-const HIGH_TEMP_THRESHOLD = 45.0;
     
 export default Vue.extend({
     props: {
@@ -35,10 +38,19 @@ export default Vue.extend({
         },
     },
     computed: {
+        acuityPercentage() : number {
+            return this.sensors.lidar.acuity * 100.0;
+        },
+        acuityIndicator() : string {
+            return this.sensors.lidar.acuity > 0.50 ? 'fa-eye' : 'fa-low-vision';
+        },
+        temperatureFahrenheit() : number {
+            return 1.8 * this.sensors.temperature + 32.0;
+        },
         temperatureIndicator() : string {
-            if (this.sensors.temperature < LOW_TEMP_THRESHOLD) {
+            if (this.sensors.temperature < 0.0) {
                 return 'fa-temperature-low';
-            } else if (this.sensors.temperature > HIGH_TEMP_THRESHOLD) {
+            } else if (this.sensors.temperature > 65.0) {
                 return 'fa-temperature-high';
             } else {
                 return 'fa-thermometer-half';

@@ -59,8 +59,8 @@
 #define ACCEL_CALIBRATION_LOOPS 8
 #define ACCEL_LSB_PER_G 16384.0
 #define ACCELERATION_SAMPLE_RATE 50
-#define MOVEMENT_NORM_THRESHOLD 0.1
-#define TEMPERATURE_SAMPLE_RATE 1000
+#define MOVEMENT_THRESHOLD 0.1
+#define TEMPERATURE_SAMPLE_RATE 3000
 #define TEMPERATURE_SENSITIVITY 340.0
 #define TEMPERATURE_CONSTANT 36.53
 
@@ -80,13 +80,14 @@
 #define LIDAR_SENSOR_OFFSET -10
 #define LIDAR_TIMING_BUDGET 100000
 #define LIDAR_SAMPLE_RATE 100
-#define LIDAR_MAX_RANGE 4000
+#define LIDAR_MAX_RANGE 3600
 #define LIDAR_RANGE_VALID 0
 #define LIDAR_NOISY_SIGNAL 1
 #define LIDAR_SIGNAL_FAILURE 2
 #define LIDAR_PHASE_OUT_OF_BOUNDS 4
+#define LIDAR_ACUITY_SAMPLE_RATE 1000
 
-#define EXPLORE_SAMPLE_RATE 500
+#define EXPLORE_SAMPLE_RATE 250
 
 #define SCAN_SAMPLE_RATE LIDAR_SAMPLE_RATE
 #define SCAN_WINDOW M_PI
@@ -118,8 +119,8 @@ float _battery_voltage;
 
 Ticker battery_timer;
 
-int _throttle = 900;
 uint8_t _direction = FORWARD;
+unsigned int _throttle = 900;
 bool _stopped = true;
 
 MPU6050 mpu(MPU_ADDRESS);
@@ -149,8 +150,9 @@ float _scan_angles[NUM_SCANS];
 unsigned int _distances_to_object[NUM_SCANS];
 float _average_distance_to_object;
 uint8_t _scan_count;
+float _lidar_acuity;
 
-Ticker scan_timer, collision_timer;
+Ticker scan_timer, collision_timer, acuity_timer;
 
 float _path_affinity = 2.0;
 
@@ -406,6 +408,8 @@ void setupLidar() {
   lidar.setDistanceMode(VL53L1X::Long);
   lidar.setMeasurementTimingBudget(LIDAR_TIMING_BUDGET);
   lidar.startContinuous(LIDAR_SAMPLE_RATE);
+
+  acuity_timer.attach_ms(LIDAR_ACUITY_SAMPLE_RATE, updateLidarAcuity);
 }
 
 /**
@@ -421,8 +425,10 @@ void setupRandom() {
  * Set up the mover model.
  */
 void setupMover() {
+  float scale = 1.0 / MAX_RAND_INT;
+  
   for (uint8_t i = 0; i < 5; i++) {
-    _mover_weights[i] = random(-MAX_RAND_INT, MAX_RAND_INT) / (float) MAX_RAND_INT;
+    _mover_weights[i] = scale * random(-MAX_RAND_INT, MAX_RAND_INT);
   }
   
   Serial.println("Mover model initialized");
@@ -518,6 +524,10 @@ void handleGetRobot(AsyncWebServerRequest *request) {
   
   sensors["temperature"] = _temperature;
 
+  JsonObject lidar = sensors.createNestedObject("lidar");
+  
+  lidar["acuity"] = _lidar_acuity;
+
   JsonObject autonomy = robot.createNestedObject("autonomy");
 
   autonomy["enabled"] = isAutonomous();
@@ -532,11 +542,11 @@ void handleGetRobot(AsyncWebServerRequest *request) {
 
   JsonObject importances = mover.createNestedObject("importances");
 
-  importances["throttle"] = fabs(_mover_weights[0]);
-  importances["battery"] = fabs(_mover_weights[1]);
-  importances["pitch"] = fabs(_mover_weights[2]);
-  importances["distance"] = fabs(_mover_weights[3]);
-  importances["averageDistance"] = fabs(_mover_weights[4]);
+  importances["throttle"] = moverThrottleImportance();
+  importances["battery"] = moverBatteryImportance();
+  importances["pitch"] = moverPitchImportance();
+  importances["distance"] = moverDistanceImportance();
+  importances["averageDistance"] = moverAverageDistanceImportance();
   
   serializeJson(doc, buffer);
 
@@ -592,19 +602,19 @@ void handleStop(AsyncWebServerRequest *request) {
 }
 
 /**
- * Handle the stop movement request.
+ * Handle a beep request.
  */
-void handleExplore(AsyncWebServerRequest *request) {
-  explore();
+void handleBeep(AsyncWebServerRequest *request) {
+  beep(2);
 
   request->send(HTTP_OK);
 }
 
 /**
- * Handle a beep request.
+ * Handle the explore request.
  */
-void handleBeep(AsyncWebServerRequest *request) {
-  beep(2);
+void handleExplore(AsyncWebServerRequest *request) {
+  explore();
 
   request->send(HTTP_OK);
 }
@@ -621,9 +631,7 @@ void handleSetThrottlePercentage(AsyncWebServerRequest *request, JsonVariant &js
     return;
   }
 
-  int throttle = doc["throttle"];
-
-  setThrottlePercentage(throttle);
+  setThrottlePercentage(doc["throttle"]);
 
   request->send(HTTP_OK);
 }
@@ -639,10 +647,8 @@ void handleRotateLeft(AsyncWebServerRequest *request, JsonVariant &json) {
 
     return;
   }
-
-  float radians = doc["radians"];
       
-  rotateLeft(radians);
+  rotateLeft(doc["radians"]);
 
   request->send(HTTP_OK);
 }
@@ -658,10 +664,8 @@ void handleRotateRight(AsyncWebServerRequest *request, JsonVariant &json) {
 
     return;
   }
-
-  float radians = doc["radians"];
       
-  rotateRight(radians);
+  rotateRight(doc["radians"]);
   
   request->send(HTTP_OK);
 }
@@ -678,9 +682,7 @@ void handleSetPathAffinity(AsyncWebServerRequest *request, JsonVariant &json) {
     return;
   }
 
-  float pathAffinity = doc["pathAffinity"];
-
-  setPathAffinity(pathAffinity);
+  setPathAffinity(doc["pathAffinity"]);
 
   request->send(HTTP_OK);
 }
@@ -697,9 +699,7 @@ void handleSetMoverMaxOvershoot(AsyncWebServerRequest *request, JsonVariant &jso
     return;
   }
 
-  float maxOvershoot = doc["maxOvershoot"];
-
-  setMoverMaxOvershoot(maxOvershoot);
+  setMoverMaxOvershoot(doc["maxOvershoot"]);
 
   request->send(HTTP_OK);
 }
@@ -716,9 +716,7 @@ void handleSetMoverLearningRate(AsyncWebServerRequest *request, JsonVariant &jso
     return;
   }
 
-  float learningRate = doc["learningRate"];
-
-  setMoverLearningRate(learningRate);
+  setMoverLearningRate(doc["learningRate"]);
 
   request->send(HTTP_OK);
 }
@@ -735,9 +733,7 @@ void handleSetMoverMomentum(AsyncWebServerRequest *request, JsonVariant &json) {
     return;
   }
 
-  float momentum = doc["momentum"];
-
-  setMoverMomentum(momentum);
+  setMoverMomentum(doc["momentum"]);
 
   request->send(HTTP_OK);
 }
@@ -754,9 +750,7 @@ void handleSetMoverAlpha(AsyncWebServerRequest *request, JsonVariant &json) {
     return;
   }
 
-  float alpha = doc["alpha"];
-
-  setMoverAlpha(alpha);
+  setMoverAlpha(doc["alpha"]);
 
   request->send(HTTP_OK);
 }
@@ -837,9 +831,9 @@ void go() {
  * Apply the brake to the motors.
  */
 void brake() {
-  disableStabilizer();
   disableCollisionDetection();
   disableRolloverDetection();
+  disableStabilizer();
 
   analogWrite(MOTOR_A_THROTTLE_PIN, 0);
   analogWrite(MOTOR_B_THROTTLE_PIN, 0);
@@ -1158,11 +1152,11 @@ void move() {
 
   _mover_start_timestamp = now;
 
-  unsigned long max_overshoot = round(_mover_max_overshoot * fabs(delta));
+  long max_overshoot = round(_mover_max_overshoot * fabs(delta));
 
-  unsigned long overshoot = random(0, max_overshoot);
+  long overshoot = random(0, max_overshoot);
 
-  unsigned long burn_time = round(fmax(0.0, delta + overshoot));
+  unsigned long burn_time = round(fmax(0.0, delta)) + overshoot;
   
   _mover_end_timestamp = now + burn_time;
 
@@ -1191,8 +1185,10 @@ void mover() {
 
     float dydl = _mover_prediction - delta;
 
+    float dydw;
+
     for (uint8_t i = 0; i < 5; i++) {
-      float dydw = dydl * _mover_features[i];
+      dydw = dydl * _mover_features[i];
       
       dydw += _mover_alpha * _mover_weights[i];
 
@@ -1222,11 +1218,11 @@ void mover() {
       
       JsonObject importances = doc.createNestedObject("importances");
 
-      importances["throttle"] = fabs(_mover_weights[0]);
-      importances["battery"] = fabs(_mover_weights[1]);
-      importances["pitch"] = fabs(_mover_weights[2]);
-      importances["distance"] = fabs(_mover_weights[3]);
-      importances["averageDistance"] = fabs(_mover_weights[4]);
+      importances["throttle"] = moverThrottleImportance();
+      importances["battery"] = moverBatteryImportance();
+      importances["pitch"] = moverPitchImportance();
+      importances["distance"] = moverDistanceImportance();
+      importances["averageDistance"] = moverAverageDistanceImportance();
   
       serializeJson(doc, buffer);
 
@@ -1237,6 +1233,41 @@ void mover() {
 
     mover_timer.detach();
   }
+}
+
+/**
+ * Return the importance of the throttle feature in the mover model.
+ */
+float moverThrottleImportance() {
+  return fabs(_mover_weights[0]);
+}
+
+/**
+ * Return the importance of the battery feature in the mover model.
+ */
+float moverBatteryImportance() {
+  return fabs(_mover_weights[1]);
+}
+
+/**
+ * Return the importance of the pitch feature in the mover model.
+ */
+float moverPitchImportance() {
+  return fabs(_mover_weights[2]);
+}
+
+/**
+ * Return the importance of the distance feature in the mover model.
+ */
+float moverDistanceImportance() {
+  return fabs(_mover_weights[3]);
+}
+
+/**
+ * Return the importance of the average distance feature in the mover model.
+ */
+float moverAverageDistanceImportance() {
+  return fabs(_mover_weights[4]);
 }
 
 /**
@@ -1368,10 +1399,7 @@ void detectCollision() {
 /**
  * Update the battery voltage.
  */
-void updateBattery() {
-  StaticJsonDocument<64> doc;
-  char buffer[64];
-      
+void updateBattery() {      
   unsigned int raw = analogRead(BATTERY_PIN);
 
   _battery_voltage = (raw / VOLTMETER_RESOLUTION) * MAX_VOLTAGE;
@@ -1380,6 +1408,9 @@ void updateBattery() {
     stop();
 
     if (malfunction_emitter.count() > 0) {
+      StaticJsonDocument<64> doc;
+      char buffer[64];
+  
       doc["voltage"] = _battery_voltage;
   
       serializeJson(doc, buffer);
@@ -1390,6 +1421,9 @@ void updateBattery() {
     panicNow();
   } else {
     if (sensor_emitter.count() > 0) {
+      StaticJsonDocument<64> doc;
+      char buffer[64];
+  
       doc["voltage"] = _battery_voltage;
       doc["percentage"] = batteryPercentage();
   
@@ -1403,20 +1437,40 @@ void updateBattery() {
 /**
  * Update the temperature.
  */
-void updateTemperature() {
-  StaticJsonDocument<64> doc;
-  char buffer[64];
-    
-  long raw = mpu.getTemperature();
-  
-  _temperature = raw / TEMPERATURE_SENSITIVITY + TEMPERATURE_CONSTANT;
+void updateTemperature() {  
+  _temperature = mpu.getTemperature() / TEMPERATURE_SENSITIVITY + TEMPERATURE_CONSTANT;
 
-  if (sensor_emitter.count() > 0) {      
+  if (sensor_emitter.count() > 0) {
+    StaticJsonDocument<64> doc;
+    char buffer[64];
+     
     doc["temperature"] = _temperature;
   
     serializeJson(doc, buffer);
 
     sensor_emitter.send(buffer, "temperature-updated");
+  }
+}
+
+/**
+ * Update the current lidar sensor acuity.
+ */
+void updateLidarAcuity() {
+  float signal = lidar.ranging_data.peak_signal_count_rate_MCPS;
+    
+  float noise = lidar.ranging_data.ambient_count_rate_MCPS;
+
+  _lidar_acuity = signal / (signal + noise);
+
+  if (sensor_emitter.count() > 0) {
+    StaticJsonDocument<64> doc;
+    char buffer[64];
+     
+    doc["acuity"] = _lidar_acuity;
+  
+    serializeJson(doc, buffer);
+
+    sensor_emitter.send(buffer, "lidar-acuity-updated");
   }
 }
 
@@ -1447,9 +1501,7 @@ void silenceBeeper(uint8_t remaining) {
  */
 void updateGravity() {
   _gravity.x = -2.0 * (_q.x * _q.z - _q.w * _q.y);
-  
   _gravity.y = 2.0 * (_q.w * _q.x + _q.y * _q.z);
-  
   _gravity.z = -(sq(_q.w) - sq(_q.x) -sq(_q.y) + sq(_q.z));
 }
 
@@ -1483,7 +1535,7 @@ void updateAcceleration() {
 bool isMoving() {
   float norm = sqrt(sq(_acceleration.x) + sq(_acceleration.y) + sq(_acceleration.z));
 
-  return norm > MOVEMENT_NORM_THRESHOLD;
+  return norm > MOVEMENT_THRESHOLD;
 }
 
 /**

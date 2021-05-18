@@ -44,9 +44,11 @@ export default Vue.extend({
                     {
                         values: Object.values(response.data.robot.autonomy.mover.importances),
                         labels: ['Throttle', 'Battery', 'Pitch', 'Distance', 'Average Distance'],
-                        type: 'pie'
+                        type: 'pie',
+                        textinfo: 'label+percent',
                     }
                 ], {
+                    showlegend: false,
                     margin: {
                         l: 32,
                         r: 32,
@@ -64,7 +66,7 @@ export default Vue.extend({
                     responsive: true,
                     displaylogo: false,
                     modeBarButtons: [
-                        ['zoom2d', 'pan2d', 'resetScale2d', 'toImage'],
+                        ['toImage'],
                     ],
                 });
 
@@ -130,10 +132,32 @@ export default Vue.extend({
                 });
 
                 sse.subscribe('mover-epoch-complete', (event) => {
-                    Plotly.react('feature-importances-chart', {
+                    Plotly.react('feature-importances-chart', [{
                         values: Object.values(event.importances),
                         labels: ['Throttle', 'Battery', 'Pitch', 'Distance', 'Average Distance'],
-                        type: 'pie'
+                        type: 'pie',
+                        textinfo: 'label+percent',
+                    }], {
+                        showlegend: false,
+                        margin: {
+                            l: 32,
+                            r: 32,
+                            t: 32,
+                            b: 32,
+                        },
+                        paper_bgcolor: 'rgba(0, 0, 0, 0)',
+                        plot_bgcolor: 'rgba(0, 0, 0, 0)',
+                        modebar: {
+                            color: 'rgb(128, 128, 128)',
+                            activecolor: 'rgb(192, 192, 192)',
+                            bgcolor: 'rgba(0, 0, 0, 0)',
+                        },
+                    }, {
+                        responsive: true,
+                        displaylogo: false,
+                        modeBarButtons: [
+                            ['toImage'],
+                        ],
                     });
 
                     Plotly.extendTraces('training-loss-chart', {x: [[event.epoch]], y: [[event.loss]]}, [0], DATASET_SIZE);

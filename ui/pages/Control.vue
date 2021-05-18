@@ -56,6 +56,10 @@ export default Vue.extend({
                     this.sensors.temperature = event.temperature;
                 });
 
+                sse.subscribe('lidar-acuity-updated', (event) => {
+                    this.sensors.lidar.acuity = event.acuity;
+                });
+
                 this.loading = false;
             });
         }).catch((error) => {
