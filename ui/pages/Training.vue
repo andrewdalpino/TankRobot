@@ -130,7 +130,7 @@ export default Vue.extend({
                 });
 
                 sse.subscribe('mover-epoch-complete', (event) => {
-                    Plotly.restyle('feature-importances-chart', {
+                    Plotly.react('feature-importances-chart', {
                         values: Object.values(event.importances),
                         labels: ['Throttle', 'Battery', 'Pitch', 'Distance', 'Average Distance'],
                         type: 'pie'

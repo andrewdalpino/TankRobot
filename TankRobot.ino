@@ -57,21 +57,21 @@
 #define GRAVITY_SAMPLE_RATE 20
 #define ORIENTATION_SAMPLE_RATE 20
 #define ACCEL_CALIBRATION_LOOPS 8
-#define ACCEL_SAMPLE_RATE 50
 #define ACCEL_LSB_PER_G 16384.0
+#define ACCELERATION_SAMPLE_RATE 50
 #define MOVEMENT_NORM_THRESHOLD 0.1
 #define TEMPERATURE_SAMPLE_RATE 1000
 #define TEMPERATURE_SENSITIVITY 340.0
 #define TEMPERATURE_CONSTANT 36.53
 
 #define ROTATOR_SAMPLE_RATE ORIENTATION_SAMPLE_RATE
-#define ROTATOR_THRESHOLD 1.2 * DEG_TO_RAD
+#define ROTATOR_THRESHOLD 1.0 * DEG_TO_RAD
 #define ROTATOR_P_GAIN 2.0
 #define ROTATOR_I_GAIN 0.7
 #define ROTATOR_D_GAIN 1.4
 
 #define STABILIZER_SAMPLE_RATE 100
-#define STABILIZER_P_GAIN 0.6
+#define STABILIZER_P_GAIN 0.4
 #define STABILIZER_I_GAIN 0.8
 #define STABILIZER_D_GAIN 0.3
 
@@ -126,15 +126,13 @@ MPU6050 mpu(MPU_ADDRESS);
 
 Quaternion _q;
 VectorInt16 _aa;
-VectorFloat _gravity;
-VectorFloat _acceleration;
+VectorFloat _gravity, _acceleration;
 float _heading, _pitch, _roll;
 float _heading_lock, _temperature;
-unsigned long _prev_velocity_timestamp;
 uint8_t _dmp_fifo_buffer[64];
 uint16_t _dmp_packet_size;
 volatile bool _dmp_ready = false;
-void ICACHE_RAM_ATTR dmpDataReady();
+void IRAM_ATTR dmpDataReady();
 
 Ticker gravity_timer, orientation_timer, acceleration_timer;
 Ticker temperature_timer;
@@ -156,7 +154,7 @@ Ticker scan_timer, collision_timer;
 
 float _path_affinity = 2.0;
 
-float _mover_learning_rate = 0.01;
+float _mover_learning_rate = 0.1;
 float _mover_momentum = 0.9;
 float _mover_alpha = 1e-4;
 float _mover_max_overshoot = 0.3;
@@ -279,11 +277,11 @@ void setupHttpServer() {
   server.serveStatic("/fonts/fa-solid-900.woff", SPIFFS, "/fonts/fa-solid-900.woff");
   server.serveStatic("/sounds/plucky.ogg", SPIFFS, "/sounds/plucky.ogg");
 
+  server.on("/robot", HTTP_GET, handleGetRobot);
   server.on("/robot/motors", HTTP_DELETE, handleStop);
   server.on("/robot/features/beeper", HTTP_PUT, handleBeep);
   server.on("/robot/autonomy/enabled", HTTP_PUT, handleExplore);
   server.on("/robot/autonomy", HTTP_DELETE, handleStop);
-  server.on("/robot", HTTP_GET, handleGetRobot);
 
   server.addHandler(new AsyncCallbackJsonWebHandler("/robot/motors/direction", handleChangeDirection));
   server.addHandler(new AsyncCallbackJsonWebHandler("/robot/motors/throttle", handleSetThrottlePercentage));
@@ -330,8 +328,6 @@ void setupMotors() {
 
   analogWriteFreq(MAX_THROTTLE);
 
-  brake();
-
   Serial.println("Motors enabled");
 }
 
@@ -368,7 +364,6 @@ void setupMPU() {
   mpu.setFullScaleAccelRange(MPU6050_ACCEL_FS_2);
   
   mpu.setDLPFMode(LOW_PASS_FILTER_MODE);
-  mpu.setSleepEnabled(false);
 
   Serial.print("Calibrating gyroscope ");
   mpu.CalibrateGyro(GYRO_CALIBRATION_LOOPS);
@@ -378,6 +373,8 @@ void setupMPU() {
   mpu.CalibrateAccel(ACCEL_CALIBRATION_LOOPS);
   Serial.println(" done");
 
+  mpu.setSleepEnabled(false);
+
   mpu.dmpInitialize();
 
   mpu.setDMPEnabled(true);
@@ -386,7 +383,7 @@ void setupMPU() {
 
   gravity_timer.attach_ms(GRAVITY_SAMPLE_RATE, updateGravity);
   orientation_timer.attach_ms(ORIENTATION_SAMPLE_RATE, updateOrientation);
-  acceleration_timer.attach_ms(ACCEL_SAMPLE_RATE, updateAcceleration);
+  acceleration_timer.attach_ms(ACCELERATION_SAMPLE_RATE, updateAcceleration);
   temperature_timer.attach_ms(TEMPERATURE_SAMPLE_RATE, updateTemperature);
 
   Serial.println("DMP initialized");
@@ -500,7 +497,7 @@ void loop() {
 /**
  * Handle a get robot info request.
  */
-int handleGetRobot(AsyncWebServerRequest *request) {
+void handleGetRobot(AsyncWebServerRequest *request) {
   StaticJsonDocument<1024> doc;
   char buffer[1024];
 
@@ -767,7 +764,7 @@ void handleSetMoverAlpha(AsyncWebServerRequest *request, JsonVariant &json) {
 /**
  * Catch all route responds with 404.
  */
-int handleNotFound(AsyncWebServerRequest *request) {
+void handleNotFound(AsyncWebServerRequest *request) {
   request->send(HTTP_NOT_FOUND);
 }
 
@@ -840,6 +837,10 @@ void go() {
  * Apply the brake to the motors.
  */
 void brake() {
+  disableStabilizer();
+  disableCollisionDetection();
+  disableRolloverDetection();
+
   analogWrite(MOTOR_A_THROTTLE_PIN, 0);
   analogWrite(MOTOR_B_THROTTLE_PIN, 0);
 }
@@ -849,10 +850,6 @@ void brake() {
  */
 void stop() {
   brake();
-
-  disableCollisionDetection();
-  disableStabilizer();
-  disableRolloverDetection();
 
   _stopped = true;
   
@@ -1079,7 +1076,7 @@ void scanEnvironment() {
  * Control loop to scan the environment for objects.
  */
 void scanner() {
-  if (!rotator_timer.active()) {
+  if (!rotator_timer.active() && !isMoving()) {
     _distances_to_object[_scan_count] = distanceToObject();
     
     _scan_angles[_scan_count] = _heading;
