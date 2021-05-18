@@ -118,8 +118,8 @@ float _battery_voltage;
 
 Ticker battery_timer;
 
-int _throttle = 900;
 uint8_t _direction = FORWARD;
+unsigned int _throttle = 900;
 bool _stopped = true;
 
 MPU6050 mpu(MPU_ADDRESS);
@@ -421,8 +421,10 @@ void setupRandom() {
  * Set up the mover model.
  */
 void setupMover() {
+  float scale = 1.0 / MAX_RAND_INT;
+  
   for (uint8_t i = 0; i < 5; i++) {
-    _mover_weights[i] = random(-MAX_RAND_INT, MAX_RAND_INT) / (float) MAX_RAND_INT;
+    _mover_weights[i] = scale * random(-MAX_RAND_INT, MAX_RAND_INT);
   }
   
   Serial.println("Mover model initialized");
@@ -592,19 +594,19 @@ void handleStop(AsyncWebServerRequest *request) {
 }
 
 /**
- * Handle the stop movement request.
+ * Handle a beep request.
  */
-void handleExplore(AsyncWebServerRequest *request) {
-  explore();
+void handleBeep(AsyncWebServerRequest *request) {
+  beep(2);
 
   request->send(HTTP_OK);
 }
 
 /**
- * Handle a beep request.
+ * Handle the explore request.
  */
-void handleBeep(AsyncWebServerRequest *request) {
-  beep(2);
+void handleExplore(AsyncWebServerRequest *request) {
+  explore();
 
   request->send(HTTP_OK);
 }
@@ -621,9 +623,7 @@ void handleSetThrottlePercentage(AsyncWebServerRequest *request, JsonVariant &js
     return;
   }
 
-  int throttle = doc["throttle"];
-
-  setThrottlePercentage(throttle);
+  setThrottlePercentage(doc["throttle"]);
 
   request->send(HTTP_OK);
 }
@@ -639,10 +639,8 @@ void handleRotateLeft(AsyncWebServerRequest *request, JsonVariant &json) {
 
     return;
   }
-
-  float radians = doc["radians"];
       
-  rotateLeft(radians);
+  rotateLeft(doc["radians"]);
 
   request->send(HTTP_OK);
 }
@@ -658,10 +656,8 @@ void handleRotateRight(AsyncWebServerRequest *request, JsonVariant &json) {
 
     return;
   }
-
-  float radians = doc["radians"];
       
-  rotateRight(radians);
+  rotateRight(doc["radians"]);
   
   request->send(HTTP_OK);
 }
@@ -678,9 +674,7 @@ void handleSetPathAffinity(AsyncWebServerRequest *request, JsonVariant &json) {
     return;
   }
 
-  float pathAffinity = doc["pathAffinity"];
-
-  setPathAffinity(pathAffinity);
+  setPathAffinity(doc["pathAffinity"]);
 
   request->send(HTTP_OK);
 }
@@ -697,9 +691,7 @@ void handleSetMoverMaxOvershoot(AsyncWebServerRequest *request, JsonVariant &jso
     return;
   }
 
-  float maxOvershoot = doc["maxOvershoot"];
-
-  setMoverMaxOvershoot(maxOvershoot);
+  setMoverMaxOvershoot(doc["maxOvershoot"]);
 
   request->send(HTTP_OK);
 }
@@ -716,9 +708,7 @@ void handleSetMoverLearningRate(AsyncWebServerRequest *request, JsonVariant &jso
     return;
   }
 
-  float learningRate = doc["learningRate"];
-
-  setMoverLearningRate(learningRate);
+  setMoverLearningRate(doc["learningRate"]);
 
   request->send(HTTP_OK);
 }
@@ -735,9 +725,7 @@ void handleSetMoverMomentum(AsyncWebServerRequest *request, JsonVariant &json) {
     return;
   }
 
-  float momentum = doc["momentum"];
-
-  setMoverMomentum(momentum);
+  setMoverMomentum(doc["momentum"]);
 
   request->send(HTTP_OK);
 }
@@ -754,9 +742,7 @@ void handleSetMoverAlpha(AsyncWebServerRequest *request, JsonVariant &json) {
     return;
   }
 
-  float alpha = doc["alpha"];
-
-  setMoverAlpha(alpha);
+  setMoverAlpha(doc["alpha"]);
 
   request->send(HTTP_OK);
 }
@@ -837,9 +823,9 @@ void go() {
  * Apply the brake to the motors.
  */
 void brake() {
-  disableStabilizer();
   disableCollisionDetection();
   disableRolloverDetection();
+  disableStabilizer();
 
   analogWrite(MOTOR_A_THROTTLE_PIN, 0);
   analogWrite(MOTOR_B_THROTTLE_PIN, 0);
@@ -1158,11 +1144,11 @@ void move() {
 
   _mover_start_timestamp = now;
 
-  unsigned long max_overshoot = round(_mover_max_overshoot * fabs(delta));
+  long max_overshoot = round(_mover_max_overshoot * fabs(delta));
 
-  unsigned long overshoot = random(0, max_overshoot);
+  long overshoot = random(0, max_overshoot);
 
-  unsigned long burn_time = round(fmax(0.0, delta + overshoot));
+  unsigned long burn_time = round(fmax(0.0, delta)) + overshoot;
   
   _mover_end_timestamp = now + burn_time;
 
