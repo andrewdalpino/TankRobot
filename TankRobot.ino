@@ -85,7 +85,8 @@
 #define LIDAR_NOISY_SIGNAL 1
 #define LIDAR_SIGNAL_FAILURE 2
 #define LIDAR_PHASE_OUT_OF_BOUNDS 4
-#define LIDAR_ACUITY_SAMPLE_RATE 1000
+
+#define VISIBILITY_SAMPLE_RATE 1000
 
 #define EXPLORE_SAMPLE_RATE 250
 
@@ -147,12 +148,12 @@ Ticker rollover_timer;
 VL53L1X lidar;
 
 float _scan_angles[NUM_SCANS];
+float _angle_visibilities[NUM_SCANS];
 unsigned int _distances_to_object[NUM_SCANS];
 float _average_distance_to_object;
 uint8_t _scan_count;
-float _lidar_acuity;
 
-Ticker scan_timer, collision_timer, acuity_timer;
+Ticker scan_timer, collision_timer, visibility_timer;
 
 float _path_affinity = 2.0;
 
@@ -409,7 +410,7 @@ void setupLidar() {
   lidar.setMeasurementTimingBudget(LIDAR_TIMING_BUDGET);
   lidar.startContinuous(LIDAR_SAMPLE_RATE);
 
-  acuity_timer.attach_ms(LIDAR_ACUITY_SAMPLE_RATE, updateLidarAcuity);
+  visibility_timer.attach_ms(VISIBILITY_SAMPLE_RATE, updateVisibility);
 }
 
 /**
@@ -504,8 +505,8 @@ void loop() {
  * Handle a get robot info request.
  */
 void handleGetRobot(AsyncWebServerRequest *request) {
-  StaticJsonDocument<1024> doc;
-  char buffer[1024];
+  StaticJsonDocument<512> doc;
+  char buffer[512];
 
   JsonObject robot = doc.createNestedObject("robot");
 
@@ -526,7 +527,7 @@ void handleGetRobot(AsyncWebServerRequest *request) {
 
   JsonObject lidar = sensors.createNestedObject("lidar");
   
-  lidar["acuity"] = _lidar_acuity;
+  lidar["visibility"] = visibility();
 
   JsonObject autonomy = robot.createNestedObject("autonomy");
 
@@ -1071,9 +1072,9 @@ void scanEnvironment() {
  */
 void scanner() {
   if (!rotator_timer.active() && !isMoving()) {
-    _distances_to_object[_scan_count] = distanceToObject();
-    
     _scan_angles[_scan_count] = _heading;
+    _angle_visibilities[_scan_count] = visibility();
+    _distances_to_object[_scan_count] = distanceToObject();
    
     ++_scan_count;
     
@@ -1100,9 +1101,13 @@ void choosePath() {
   long weights[NUM_SCANS];
 
   float scale = 2.0 / (NUM_SCANS * _path_affinity);
+
+  float score;
   
   for (uint8_t i = 0; i < NUM_SCANS; i++) {
-    weights[i] = round(pow(scale * _distances_to_object[i], _path_affinity));
+    score = scale * _angle_visibilities[i] * _distances_to_object[i];
+    
+    weights[i] = round(pow(score, _path_affinity));
   }
   
   long total = 0;
@@ -1453,24 +1458,18 @@ void updateTemperature() {
 }
 
 /**
- * Update the current lidar sensor acuity.
+ * Update the current lidar sensor visibility.
  */
-void updateLidarAcuity() {
-  float signal = lidar.ranging_data.peak_signal_count_rate_MCPS;
-    
-  float noise = lidar.ranging_data.ambient_count_rate_MCPS;
-
-  _lidar_acuity = signal / (signal + noise);
-
+void updateVisibility() {
   if (sensor_emitter.count() > 0) {
     StaticJsonDocument<64> doc;
     char buffer[64];
      
-    doc["acuity"] = _lidar_acuity;
+    doc["visibility"] = visibility();
   
     serializeJson(doc, buffer);
 
-    sensor_emitter.send(buffer, "lidar-acuity-updated");
+    sensor_emitter.send(buffer, "lidar-visibility-updated");
   }
 }
 
@@ -1565,6 +1564,17 @@ unsigned int distanceToObject() {
   distance += LIDAR_SENSOR_OFFSET;
 
   return max(0, distance);
+}
+
+/**
+ * Return the lidar visibility.
+ */
+float visibility() {
+  float signal = lidar.ranging_data.peak_signal_count_rate_MCPS;
+    
+  float noise = lidar.ranging_data.ambient_count_rate_MCPS;
+
+  return signal / (signal + noise);
 }
 
 /**

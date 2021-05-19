@@ -2,8 +2,8 @@
     <div class="level is-mobile">
         <div class="level-item has-text-centered">
             <div>
-                <p class="heading is-size-7">{{ acuityPercentage.toFixed(0) }}%</p>
-                <span class="icon is-large"><i class="fas fa-2x" :class="acuityIndicator"></i></span>
+                <p class="heading is-size-7">{{ visibilityPercentage.toFixed(0) }}%</p>
+                <span class="icon is-large"><i class="fas fa-2x" :class="visibilityIndicator"></i></span>
             </div>
         </div>
         <div class="level-item has-text-centered">
@@ -38,11 +38,11 @@ export default Vue.extend({
         },
     },
     computed: {
-        acuityPercentage() : number {
-            return this.sensors.lidar.acuity * 100.0;
+        visibilityPercentage() : number {
+            return this.sensors.lidar.visibility * 100.0;
         },
-        acuityIndicator() : string {
-            return this.sensors.lidar.acuity > 0.50 ? 'fa-eye' : 'fa-low-vision';
+        visibilityIndicator() : string {
+            return this.sensors.lidar.visibility > 0.50 ? 'fa-eye' : 'fa-low-vision';
         },
         temperatureFahrenheit() : number {
             return 1.8 * this.sensors.temperature + 32.0;
