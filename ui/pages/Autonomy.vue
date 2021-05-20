@@ -114,7 +114,7 @@ export default Vue.extend({
                 enabled: false,
                 pathAffinity: 2.0,
                 mover: {
-                    learningRate: 0.1,
+                    learningRate: 0.01,
                     momentum: 0.9,
                     alpha: 1e-4,
                     maxOvershoot: 0.3,

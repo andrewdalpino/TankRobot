@@ -54,12 +54,15 @@
 #define MPU_MAX_FIFO_COUNT 1024
 #define LOW_PASS_FILTER_MODE 3
 #define GYRO_CALIBRATION_LOOPS 8
-#define GRAVITY_SAMPLE_RATE 20
-#define ORIENTATION_SAMPLE_RATE 20
+#define QUATERNION_SAMPLE_RATE 20
+#define GRAVITY_SAMPLE_RATE QUATERNION_SAMPLE_RATE
+#define ORIENTATION_SAMPLE_RATE GRAVITY_SAMPLE_RATE
 #define ACCEL_CALIBRATION_LOOPS 8
 #define ACCEL_LSB_PER_G 16384.0
 #define ACCELERATION_SAMPLE_RATE 50
-#define MOVEMENT_THRESHOLD 0.1
+#define IS_MOVING_SAMPLE_RATE ACCELERATION_SAMPLE_RATE
+#define ZERO_MOVEMENT_THRESHOLD 0.13
+#define ZERO_MOVEMENT_WINDOW 2
 #define TEMPERATURE_SAMPLE_RATE 3000
 #define TEMPERATURE_SENSITIVITY 340.0
 #define TEMPERATURE_CONSTANT 36.53
@@ -70,7 +73,7 @@
 #define ROTATOR_I_GAIN 0.7
 #define ROTATOR_D_GAIN 1.4
 
-#define STABILIZER_SAMPLE_RATE 100
+#define STABILIZER_SAMPLE_RATE 50
 #define STABILIZER_P_GAIN 0.4
 #define STABILIZER_I_GAIN 0.8
 #define STABILIZER_D_GAIN 0.3
@@ -124,19 +127,25 @@ uint8_t _direction = FORWARD;
 unsigned int _throttle = 900;
 bool _stopped = true;
 
+Ticker stall_timer;
+
 MPU6050 mpu(MPU_ADDRESS);
 
 Quaternion _q;
-VectorInt16 _aa;
-VectorFloat _gravity, _acceleration;
+VectorFloat _gravity;
+VectorFloat _acceleration;
 float _heading, _pitch, _roll;
-float _heading_lock, _temperature;
+float _heading_lock;
+float _temperature;
+bool _is_moving;
+uint8_t _zero_movement_count;
 uint8_t _dmp_fifo_buffer[64];
 uint16_t _dmp_packet_size;
 volatile bool _dmp_ready = false;
 void IRAM_ATTR dmpDataReady();
 
-Ticker gravity_timer, orientation_timer, acceleration_timer;
+Ticker quaternion_timer, gravity_timer, orientation_timer;
+Ticker acceleration_timer, is_moving_timer;
 Ticker temperature_timer;
 
 float _rotator_prev_delta, _rotator_delta_integral;
@@ -157,7 +166,7 @@ Ticker scan_timer, collision_timer, visibility_timer;
 
 float _path_affinity = 2.0;
 
-float _mover_learning_rate = 0.1;
+float _mover_learning_rate = 0.01;
 float _mover_momentum = 0.9;
 float _mover_alpha = 1e-4;
 float _mover_max_overshoot = 0.3;
@@ -384,9 +393,11 @@ void setupMPU() {
 
   _dmp_packet_size = mpu.dmpGetFIFOPacketSize();
 
+  quaternion_timer.attach_ms(QUATERNION_SAMPLE_RATE, updateQuaternion);
   gravity_timer.attach_ms(GRAVITY_SAMPLE_RATE, updateGravity);
   orientation_timer.attach_ms(ORIENTATION_SAMPLE_RATE, updateOrientation);
   acceleration_timer.attach_ms(ACCELERATION_SAMPLE_RATE, updateAcceleration);
+  is_moving_timer.attach_ms(IS_MOVING_SAMPLE_RATE, updateIsMoving);
   temperature_timer.attach_ms(TEMPERATURE_SAMPLE_RATE, updateTemperature);
 
   Serial.println("DMP initialized");
@@ -491,10 +502,6 @@ void loop() {
 
         fifo_count -= _dmp_packet_size;
       }
-
-      mpu.dmpGetQuaternion(&_q, _dmp_fifo_buffer);
-      
-      mpu.dmpGetAccel(&_aa, _dmp_fifo_buffer);
     }
 
     _dmp_ready = false;
@@ -769,7 +776,7 @@ void handleNotFound(AsyncWebServerRequest *request) {
 void forward() {  
   _direction = FORWARD;
 
-  enableCollisionDetection();
+  enableCollisionPrevention();
   enableStabilizer();
 
   digitalWrite(MOTOR_A_DIRECTION_PIN, FORWARD);
@@ -829,18 +836,6 @@ void go() {
 }
 
 /**
- * Apply the brake to the motors.
- */
-void brake() {
-  disableCollisionDetection();
-  disableRolloverDetection();
-  disableStabilizer();
-
-  analogWrite(MOTOR_A_THROTTLE_PIN, 0);
-  analogWrite(MOTOR_B_THROTTLE_PIN, 0);
-}
-
-/**
  * Disengage the motors and related timers.
  */
 void stop() {
@@ -852,6 +847,18 @@ void stop() {
   rotator_timer.detach();
   scan_timer.detach();
   mover_timer.detach();
+}
+
+/**
+ * Apply the brake to the motors.
+ */
+void brake() {
+  disableCollisionPrevention();
+  disableRolloverDetection();
+  disableStabilizer();
+
+  analogWrite(MOTOR_A_THROTTLE_PIN, 0);
+  analogWrite(MOTOR_B_THROTTLE_PIN, 0);
 }
 
 /**
@@ -1027,7 +1034,7 @@ bool isAutonomous() {
 void explorer() {
   bool ready = !scan_timer.active() && !mover_timer.active() && !rotator_timer.active();
   
-  if (ready && !isMoving()) {
+  if (ready && !_is_moving) {
     switch (_explorer_step) {
       case 0: {
         scanEnvironment();
@@ -1071,7 +1078,7 @@ void scanEnvironment() {
  * Control loop to scan the environment for objects.
  */
 void scanner() {
-  if (!rotator_timer.active() && !isMoving()) {
+  if (!rotator_timer.active() && !_is_moving) {
     _scan_angles[_scan_count] = _heading;
     _angle_visibilities[_scan_count] = visibility();
     _distances_to_object[_scan_count] = distanceToObject();
@@ -1134,7 +1141,7 @@ void choosePath() {
 }
 
 /**
- * Move the robot forward.
+ * Displace the vehicle along the x axis.
  */
 void move() {
   _mover_features[0] = throttlePercentage() / 100.0;
@@ -1379,14 +1386,14 @@ void detectRollover() {
 /**
  * Enable collision detection.
  */
-void enableCollisionDetection() {
+void enableCollisionPrevention() {
   collision_timer.attach_ms(COLLISION_SAMPLE_RATE, detectCollision);
 }
 
 /**
  * Disable collision detection.
  */
-void disableCollisionDetection() {
+void disableCollisionPrevention() {
   collision_timer.detach();
 }
 
@@ -1496,6 +1503,13 @@ void silenceBeeper(uint8_t remaining) {
 }
 
 /**
+ * Update the rotation of the vehicle.
+ */
+void updateQuaternion() {
+  mpu.dmpGetQuaternion(&_q, _dmp_fifo_buffer);
+}
+
+/**
  * Update the gravity vector from the raw quaternion.
  */
 void updateGravity() {
@@ -1519,9 +1533,13 @@ void updateOrientation() {
  * Update the current acceleration in m/sec ^ 2 of the vehicle with gravity vector removed.
  */
 void updateAcceleration() {
-  _acceleration.x = -(_aa.x / ACCEL_LSB_PER_G);
-  _acceleration.y = (_aa.y / ACCEL_LSB_PER_G);
-  _acceleration.z = -(_aa.z / ACCEL_LSB_PER_G);
+  VectorInt16 aa;
+  
+  mpu.dmpGetAccel(&aa, _dmp_fifo_buffer);
+        
+  _acceleration.x = -(aa.x / ACCEL_LSB_PER_G);
+  _acceleration.y = (aa.y / ACCEL_LSB_PER_G);
+  _acceleration.z = -(aa.z / ACCEL_LSB_PER_G);
 
   _acceleration.x -= _gravity.x;
   _acceleration.y -= _gravity.y;
@@ -1531,10 +1549,22 @@ void updateAcceleration() {
 /**
  * Is the vehicle in motion?
  */
-bool isMoving() {
+bool updateIsMoving() {
   float norm = sqrt(sq(_acceleration.x) + sq(_acceleration.y) + sq(_acceleration.z));
 
-  return norm > MOVEMENT_THRESHOLD;
+  if (norm > ZERO_MOVEMENT_THRESHOLD) {
+    _zero_movement_count = 0;
+
+    _is_moving = true;
+  } else {
+    if (_zero_movement_count >= ZERO_MOVEMENT_WINDOW) {
+      _is_moving = false;
+    } else {
+      ++_zero_movement_count;
+          
+      _is_moving = true;
+    }
+  }
 }
 
 /**

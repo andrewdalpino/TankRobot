@@ -10,7 +10,7 @@ Connect to Tank Robot's wireless access point and navigate the user interface us
 
 ## Parts Used In This Project
 
-- TP101 Robot Tank Chassis
+- TP101 Robot Tank Platform
 - NodeMCU 1.0 ESP-12E Microcontroller
 - NodeMCU Motor Shield
 - MPU-6050 Inertial Measurement Unit
@@ -22,11 +22,12 @@ Connect to Tank Robot's wireless access point and navigate the user interface us
 - 4 X 16V 220μF Capacitors
 - 1 X 220K Ohm Resistor
 - 1 X 300K Ohm Resistor
-- 3D Printed Sensor Mount
-- 3D Printed IMU Mount
+- 3D Printed Board Mount
+- 3D Printed MPU-6050 Mount
+- 3D Printed 18650 Battery Holder
 - 2 X 3D Printed Axle Bushings
-- 3D Printed Battery Holder
 - 2 X 2 Pin Male + Female JST Connectors
 - 4 X M2x8 Socket Head Screws
 - 1 X M3x8 Socket Head Screw
 - 3 X M4x8 Socket Head Screws
+- 3mm Double-sided Foam Tape
