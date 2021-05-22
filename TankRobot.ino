@@ -95,7 +95,7 @@
 
 #define SCAN_SAMPLE_RATE LIDAR_SAMPLE_RATE
 #define SCAN_WINDOW M_PI
-#define NUM_SCANS 4
+#define NUM_SCANS 6
 
 #define MOVER_SAMPLE_RATE LIDAR_SAMPLE_RATE
 
@@ -166,7 +166,7 @@ Ticker scan_timer, collision_timer, visibility_timer;
 
 float _path_affinity = 2.0;
 
-float _mover_learning_rate = 0.01;
+float _mover_learning_rate = 0.1;
 float _mover_momentum = 0.9;
 float _mover_alpha = 1e-4;
 float _mover_max_overshoot = 0.3;
@@ -437,10 +437,8 @@ void setupRandom() {
  * Set up the mover model.
  */
 void setupMover() {
-  float scale = 1.0 / MAX_RAND_INT;
-  
-  for (uint8_t i = 0; i < 5; i++) {
-    _mover_weights[i] = scale * random(-MAX_RAND_INT, MAX_RAND_INT);
+  for (uint8_t i = 0; i < 5; ++i) {
+    _mover_weights[i] = random(-MAX_RAND_INT, MAX_RAND_INT) / (float) MAX_RAND_INT;
   }
   
   Serial.println("Mover model initialized");
@@ -1111,7 +1109,7 @@ void choosePath() {
 
   float score;
   
-  for (uint8_t i = 0; i < NUM_SCANS; i++) {
+  for (uint8_t i = 0; i < NUM_SCANS; ++i) {
     score = scale * _angle_visibilities[i] * _distances_to_object[i];
     
     weights[i] = round(pow(score, _path_affinity));
@@ -1119,7 +1117,7 @@ void choosePath() {
   
   long total = 0;
 
-  for (uint8_t i = 0; i < NUM_SCANS; i++) {
+  for (uint8_t i = 0; i < NUM_SCANS; ++i) {
     total += weights[i];
   }
  
@@ -1127,7 +1125,7 @@ void choosePath() {
 
   float delta;
   
-  for (uint8_t i = 0; i < NUM_SCANS; i++) {
+  for (uint8_t i = 0; i < NUM_SCANS; ++i) {
     threshold -= weights[i];
 
     if (threshold <= 0) {
@@ -1152,7 +1150,7 @@ void move() {
 
   float delta = 0.0;
 
-  for (uint8_t i = 0; i < 5; i++) {
+  for (uint8_t i = 0; i < 5; ++i) {
     delta += _mover_features[i] * _mover_weights[i];
   }
 
@@ -1168,7 +1166,7 @@ void move() {
 
   long overshoot = random(0, max_overshoot);
 
-  unsigned long burn_time = round(fmax(0.0, delta)) + overshoot;
+  long burn_time = round(fmax(0.0, delta)) + overshoot;
   
   _mover_end_timestamp = now + burn_time;
 
@@ -1199,7 +1197,7 @@ void mover() {
 
     float dydw;
 
-    for (uint8_t i = 0; i < 5; i++) {
+    for (uint8_t i = 0; i < 5; ++i) {
       dydw = dydl * _mover_features[i];
       
       dydw += _mover_alpha * _mover_weights[i];

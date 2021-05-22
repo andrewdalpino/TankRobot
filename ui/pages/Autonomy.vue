@@ -1,6 +1,6 @@
 <template>
     <div>
-        <section class="section">
+        <section class="section" v-if="autonomy">
             <div class="container">
                 <div class="buttons">
                     <button class="button is-medium is-outlined is-fullwidth" :class="autonomy.enabled ? 'is-success' : 'is-danger'" @click="toggleAutonomy()">
@@ -114,7 +114,7 @@ export default Vue.extend({
                 enabled: false,
                 pathAffinity: 2.0,
                 mover: {
-                    learningRate: 0.01,
+                    learningRate: 0.1,
                     momentum: 0.9,
                     alpha: 1e-4,
                     maxOvershoot: 0.3,
@@ -204,6 +204,10 @@ export default Vue.extend({
             bus.$emit('communication-error', {
                 error,
             });
+        });
+
+        bus.$on('stopped', () => {
+            this.autonomy.enabled = false;
         });
     },
 });
