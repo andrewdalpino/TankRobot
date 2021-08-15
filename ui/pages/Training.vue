@@ -43,7 +43,7 @@ export default Vue.extend({
                 Plotly.newPlot('feature-importances-chart', [
                     {
                         values: Object.values(response.data.robot.autonomy.mover.importances),
-                        labels: ['Throttle', 'Battery', 'Pitch', 'Distance', 'Average Distance'],
+                        labels: ['Throttle', 'Battery', 'Pitch', 'Distance'],
                         type: 'pie',
                         textinfo: 'label+percent',
                     }
@@ -134,7 +134,7 @@ export default Vue.extend({
                 sse.subscribe('mover-epoch-complete', (event) => {
                     Plotly.react('feature-importances-chart', [{
                         values: Object.values(event.importances),
-                        labels: ['Throttle', 'Battery', 'Pitch', 'Distance', 'Average Distance', 'Visibility'],
+                        labels: ['Throttle', 'Battery', 'Pitch', 'Distance'],
                         type: 'pie',
                         textinfo: 'label+percent',
                     }], {

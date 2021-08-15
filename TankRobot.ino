@@ -94,8 +94,8 @@
 #define EXPLORE_SAMPLE_RATE 250
 
 #define SCAN_SAMPLE_RATE LIDAR_SAMPLE_RATE
-#define SCAN_WINDOW M_PI
-#define NUM_SCANS 6
+#define SCAN_WINDOW 0.75 * PI
+#define NUM_SCANS 4
 
 #define MOVER_SAMPLE_RATE LIDAR_SAMPLE_RATE
 
@@ -159,7 +159,6 @@ VL53L1X lidar;
 float _scan_angles[NUM_SCANS];
 float _angle_visibilities[NUM_SCANS];
 unsigned int _distances_to_object[NUM_SCANS];
-float _average_distance_to_object;
 uint8_t _scan_count;
 
 Ticker scan_timer, collision_timer, visibility_timer;
@@ -170,9 +169,9 @@ float _mover_learning_rate = 0.1;
 float _mover_momentum = 0.9;
 float _mover_alpha = 1e-4;
 float _mover_max_overshoot = 0.3;
-float _mover_features[5];
-float _mover_weights[5];
-float _mover_weight_velocities[5];
+float _mover_features[4];
+float _mover_weights[4];
+float _mover_weight_velocities[4];
 float _mover_bias;
 float _mover_bias_velocity;
 float _mover_prediction;
@@ -552,7 +551,6 @@ void handleGetRobot(AsyncWebServerRequest *request) {
   importances["battery"] = moverBatteryImportance();
   importances["pitch"] = moverPitchImportance();
   importances["distance"] = moverDistanceImportance();
-  importances["averageDistance"] = moverAverageDistanceImportance();
   
   serializeJson(doc, buffer);
 
@@ -948,7 +946,7 @@ void rotateRight(float radians) {
  * Rotate the vehicle.
  */
 void rotate(float radians) {
-  float target = constrain(radians, -M_PI, M_PI);
+  float target = constrain(radians, -PI, PI);
     
   _heading_lock = calculateTargetAngle(_heading, target);
 
@@ -966,7 +964,7 @@ void rotator() {
 
   _rotator_delta_integral += 0.5 * (delta + _rotator_prev_delta);
 
-  _rotator_delta_integral = constrain(_rotator_delta_integral, -M_PI, M_PI);
+  _rotator_delta_integral = constrain(_rotator_delta_integral, -PI, PI);
       
   float derivative = delta - _rotator_prev_delta;
 
@@ -974,7 +972,7 @@ void rotator() {
     + ROTATOR_I_GAIN * _rotator_delta_integral
     + ROTATOR_D_GAIN * derivative;
 
-  float alpha = min(fabs(theta) / M_PI, 1.0);
+  float alpha = min(fabs(theta) / PI, 1.0);
 
   int rotator_throttle = round(alpha * _throttle);
 
@@ -1086,14 +1084,6 @@ void scanner() {
     if (_scan_count < NUM_SCANS) {
       rotateLeft(SCAN_WINDOW / (NUM_SCANS - 1));
     } else {
-      float sigma = 0.0;
-      
-      for (uint8_t i = 0; i < NUM_SCANS; ++i) {
-         sigma += _distances_to_object[i];
-      }
-      
-      _average_distance_to_object = sigma / NUM_SCANS;
-      
       scan_timer.detach();
     }
   }
@@ -1146,11 +1136,10 @@ void move() {
   _mover_features[1] = batteryPercentage() / 100.0;
   _mover_features[2] = _pitch / HALF_PI;
   _mover_features[3] = distanceToObject() / (float) LIDAR_MAX_RANGE;
-  _mover_features[4] = _average_distance_to_object / LIDAR_MAX_RANGE;
 
   float delta = 0.0;
 
-  for (uint8_t i = 0; i < 5; ++i) {
+  for (uint8_t i = 0; i < 4; ++i) {
     delta += _mover_features[i] * _mover_weights[i];
   }
 
@@ -1232,7 +1221,6 @@ void mover() {
       importances["battery"] = moverBatteryImportance();
       importances["pitch"] = moverPitchImportance();
       importances["distance"] = moverDistanceImportance();
-      importances["averageDistance"] = moverAverageDistanceImportance();
   
       serializeJson(doc, buffer);
 
@@ -1274,13 +1262,6 @@ float moverDistanceImportance() {
 }
 
 /**
- * Return the importance of the average distance feature in the mover model.
- */
-float moverAverageDistanceImportance() {
-  return fabs(_mover_weights[4]);
-}
-
-/**
  * Enable linear movement stabilizer.
  */
 void enableStabilizer() {
@@ -1307,7 +1288,7 @@ void stabilize() {
 
   _stabilizer_delta_integral += 0.5 * (delta + _stabilizer_prev_delta);
 
-  _stabilizer_delta_integral = constrain(_stabilizer_delta_integral, -M_PI, M_PI);
+  _stabilizer_delta_integral = constrain(_stabilizer_delta_integral, -PI, PI);
       
   float derivative = delta - _stabilizer_prev_delta;
 
@@ -1315,7 +1296,7 @@ void stabilize() {
     + STABILIZER_I_GAIN * _stabilizer_delta_integral
     + STABILIZER_D_GAIN * derivative;
 
-  float beta = min(fabs(theta) / M_PI, 1.0);
+  float beta = min(fabs(theta) / PI, 1.0);
 
   int backoff_throttle = round((1.0 - beta) * _throttle);
 
@@ -1573,12 +1554,8 @@ unsigned int distanceToObject() {
     
   switch (lidar.ranging_data.range_status) {
     case LIDAR_RANGE_VALID:
-      distance = lidar.ranging_data.range_mm;
-        
-      break;
-
     case LIDAR_NOISY_SIGNAL:
-      distance = round(0.5 * lidar.ranging_data.range_mm);
+      distance = lidar.ranging_data.range_mm;
         
       break;
 
@@ -1602,7 +1579,9 @@ float visibility() {
     
   float noise = lidar.ranging_data.ambient_count_rate_MCPS;
 
-  return signal / (signal + noise);
+  float total = signal + noise;
+
+  return signal / total;
 }
 
 /**
@@ -1611,9 +1590,9 @@ float visibility() {
 float calculateTargetAngle(float start, float delta) {
   float target = start + delta;
   
-  if (target > M_PI) {
+  if (target > PI) {
     target -= TWO_PI;
-  } else if (target < -M_PI) {
+  } else if (target < -PI) {
     target += TWO_PI;
   }
 
@@ -1626,7 +1605,7 @@ float calculateTargetAngle(float start, float delta) {
 float calculateAngleDelta(float start, float target) {
   float delta = target - start;
 
-  if (fabs(delta) > M_PI) {
+  if (fabs(delta) > PI) {
     if (start > 0.0) {
       delta = target - (start - TWO_PI);
     } else {
