@@ -2,12 +2,6 @@
     <div class="level is-mobile">
         <div class="level-item has-text-centered">
             <div>
-                <p class="heading is-size-7">{{ visibilityPercentage.toFixed(0) }}%</p>
-                <span class="icon is-large"><i class="fas fa-2x" :class="visibilityIndicator"></i></span>
-            </div>
-        </div>
-        <div class="level-item has-text-centered">
-            <div>
                 <p class="heading is-size-7">{{ temperatureFahrenheit.toFixed(1) }}°</p>
                 <span class="icon is-large"><i class="fas fa-2x" :class="temperatureIndicator"></i></span>
             </div>
@@ -38,12 +32,6 @@ export default Vue.extend({
         },
     },
     computed: {
-        visibilityPercentage() : number {
-            return this.sensors.lidar.visibility * 100.0;
-        },
-        visibilityIndicator() : string {
-            return this.sensors.lidar.visibility > 0.50 ? 'fa-eye' : 'fa-low-vision';
-        },
         temperatureFahrenheit() : number {
             return 1.8 * this.sensors.temperature + 32.0;
         },

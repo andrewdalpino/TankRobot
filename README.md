@@ -11,7 +11,7 @@ Connect to Tank Robot's wireless access point and navigate the user interface us
 ## Parts Used In This Project
 
 - TP101 Robot Tank Platform
-- NodeMCU 1.0 ESP-12E Microcontroller
+- NodeMCU 1.0 ESP-12E
 - NodeMCU Motor Shield
 - MPU-6050 Inertial Measurement Unit
 - VL53L1X Laser ToF Range Sensor

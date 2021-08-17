@@ -89,8 +89,6 @@
 #define LIDAR_SIGNAL_FAILURE 2
 #define LIDAR_PHASE_OUT_OF_BOUNDS 4
 
-#define VISIBILITY_SAMPLE_RATE 1000
-
 #define EXPLORE_SAMPLE_RATE 250
 
 #define SCAN_SAMPLE_RATE LIDAR_SAMPLE_RATE
@@ -100,7 +98,7 @@
 #define MOVER_SAMPLE_RATE LIDAR_SAMPLE_RATE
 
 #define COLLISION_SAMPLE_RATE LIDAR_SAMPLE_RATE
-#define COLLISION_THRESHOLD 400
+#define COLLISION_THRESHOLD 350
 
 #define ROLLOVER_SAMPLE_RATE 500
 #define ROLLOVER_THRESHOLD HALF_PI
@@ -161,7 +159,7 @@ float _angle_visibilities[NUM_SCANS];
 unsigned int _distances_to_object[NUM_SCANS];
 uint8_t _scan_count;
 
-Ticker scan_timer, collision_timer, visibility_timer;
+Ticker scan_timer, collision_timer;
 
 float _path_affinity = 2.0;
 
@@ -422,8 +420,6 @@ void setupLidar() {
   lidar.setDistanceMode(VL53L1X::Long);
   lidar.setMeasurementTimingBudget(LIDAR_TIMING_BUDGET);
   lidar.startContinuous(LIDAR_SAMPLE_RATE);
-
-  visibility_timer.attach_ms(VISIBILITY_SAMPLE_RATE, updateVisibility);
 }
 
 /**
@@ -531,10 +527,6 @@ void handleGetRobot(AsyncWebServerRequest *request) {
   battery["percentage"] = batteryPercentage();
   
   sensors["temperature"] = _temperature;
-
-  JsonObject lidar = sensors.createNestedObject("lidar");
-  
-  lidar["visibility"] = visibility();
 
   JsonObject autonomy = robot.createNestedObject("autonomy");
 
@@ -1459,22 +1451,6 @@ void updateTemperature() {
     serializeJson(doc, buffer);
 
     sensor_emitter.send(buffer, "temperature-updated");
-  }
-}
-
-/**
- * Update the current lidar sensor visibility.
- */
-void updateVisibility() {
-  if (sensor_emitter.count() > 0) {
-    StaticJsonDocument<64> doc;
-    char buffer[64];
-     
-    doc["visibility"] = visibility();
-  
-    serializeJson(doc, buffer);
-
-    sensor_emitter.send(buffer, "lidar-visibility-updated");
   }
 }
 

@@ -56,10 +56,6 @@ export default Vue.extend({
                     this.sensors.temperature = event.temperature;
                 });
 
-                sse.subscribe('lidar-visibility-updated', (event) => {
-                    this.sensors.lidar.visibility = event.visibility;
-                });
-
                 this.loading = false;
             });
         }).catch((error) => {
