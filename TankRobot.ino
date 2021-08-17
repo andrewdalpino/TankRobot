@@ -95,7 +95,7 @@
 
 #define SCAN_SAMPLE_RATE LIDAR_SAMPLE_RATE
 #define SCAN_WINDOW 0.75 * PI
-#define NUM_SCANS 4
+#define NUM_SCANS 5
 
 #define MOVER_SAMPLE_RATE LIDAR_SAMPLE_RATE
 
@@ -127,7 +127,7 @@ uint8_t _direction = FORWARD;
 unsigned int _throttle = 900;
 bool _stopped = true;
 
-Ticker stall_timer;
+Ticker brake_timer;
 
 MPU6050 mpu(MPU_ADDRESS);
 
@@ -184,6 +184,9 @@ Ticker mover_timer;
 uint8_t _explorer_step;
 
 Ticker explore_timer;
+
+void forward (unsigned int duration = 0);
+void reverse (unsigned int duration = 0);
 
 /**
  * Set up the serial interface.
@@ -767,9 +770,9 @@ void handleNotFound(AsyncWebServerRequest *request) {
 }
 
 /**
- * Move forward.
+ * Move forward for an amount of milliseconds.
  */
-void forward() {  
+void forward(unsigned int duration) {  
   _direction = FORWARD;
 
   enableCollisionPrevention();
@@ -777,6 +780,10 @@ void forward() {
 
   digitalWrite(MOTOR_A_DIRECTION_PIN, FORWARD);
   digitalWrite(MOTOR_B_DIRECTION_PIN, FORWARD);
+
+  if (duration > 0) {
+      brake_timer.once_ms(duration, brake);
+  }
 
   go();
 }
@@ -806,15 +813,19 @@ void right() {
 }
 
 /**
- * Move in reverse.
+ * Move in reverse for a given number of milliseconds.
  */
-void reverse() {
+void reverse(unsigned int duration) {
   _direction = REVERSE;
 
   enableStabilizer();
 
   digitalWrite(MOTOR_A_DIRECTION_PIN, REVERSE);
   digitalWrite(MOTOR_B_DIRECTION_PIN, REVERSE);
+
+  if (duration > 0) {
+      brake_timer.once_ms(duration, brake);
+  }
 
   go();
 }
@@ -1177,8 +1188,18 @@ void move() {
 void mover() {
   unsigned long now = millis();
 
-  if (distanceToObject() < COLLISION_THRESHOLD || now > _mover_end_timestamp) {
+  bool collision = distanceToObject() < COLLISION_THRESHOLD;
+
+  if (collision || now > _mover_end_timestamp) {
     brake();
+
+    mover_timer.detach();
+
+    if (collision) {
+      beep(2);
+      
+      reverse(300);
+    }
 
     float delta = now - _mover_start_timestamp;
 
@@ -1205,6 +1226,8 @@ void mover() {
 
     _mover_bias -= _mover_learning_rate * dydb
       + _mover_momentum * _mover_bias_velocity;
+
+    ++_mover_epoch;
     
     if (training_emitter.count() > 0) {
       StaticJsonDocument<256> doc;
@@ -1226,10 +1249,6 @@ void mover() {
 
       training_emitter.send(buffer, "mover-epoch-complete");
     }
-
-    ++_mover_epoch;
-
-    mover_timer.detach();
   }
 }
 
