@@ -5,18 +5,24 @@
                 <img src="../images/app-icon-small.png" width="28" height="28" loading="eager" alt="Tank Robot logo" />
             </span>
             <h1 class="navbar-item">Tank Robot</h1>
-            <a role="button" class="navbar-burger burger" aria-label="menu" aria-expanded="false" @click="open = !open">
+            <a role="button" class="navbar-burger burger" :class="{ 'is-active': open }" aria-label="menu" aria-expanded="false" @click="open = !open">
                 <span aria-hidden="true"></span>
                 <span aria-hidden="true"></span>
                 <span aria-hidden="true"></span>
             </a>
         </div>
         <div class="navbar-menu" :class="{ 'is-active' : open }">
-            <div class="navbar-end">
+            <div class="navbar-start">
                 <div class="navbar-item">
                     <router-link :to="{ name: 'control' }" class="navbar-item" @click.native="open = false">
                         <span class="icon"><i class="fas fa-arrows-alt"></i></span>
                         <span>Control</span>
+                    </router-link>
+                </div>
+                <div class="navbar-item">
+                    <router-link :to="{ name: 'dynamics' }" class="navbar-item" @click.native="open = false">
+                        <span class="icon"><i class="fas fa-road"></i></span>
+                        <span>Dynamics</span>
                     </router-link>
                 </div>
                 <div class="navbar-item">

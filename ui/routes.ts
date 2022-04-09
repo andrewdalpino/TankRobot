@@ -1,4 +1,5 @@
 import Control from './pages/Control.vue';
+import Dynamics from './pages/Dynamics.vue';
 import Autonomy from './pages/Autonomy.vue';
 import Training from './pages/Training.vue';
 
@@ -12,6 +13,11 @@ export default [
         name: 'control',
         path: '/control',
         component: Control,
+    },
+    {
+        name: 'dynamics',
+        path: '/dynamics',
+        component: Dynamics,
     },
     {
         name: 'autonomy',

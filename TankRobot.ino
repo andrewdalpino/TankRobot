@@ -69,14 +69,8 @@
 
 #define ROTATOR_SAMPLE_RATE ORIENTATION_SAMPLE_RATE
 #define ROTATOR_THRESHOLD 1.0 * DEG_TO_RAD
-#define ROTATOR_P_GAIN 2.0
-#define ROTATOR_I_GAIN 0.7
-#define ROTATOR_D_GAIN 1.4
 
 #define STABILIZER_SAMPLE_RATE 50
-#define STABILIZER_P_GAIN 0.4
-#define STABILIZER_I_GAIN 0.8
-#define STABILIZER_D_GAIN 0.3
 
 #define LIDAR_ADDRESS 0x52
 #define LIDAR_TIMEOUT 500
@@ -145,6 +139,14 @@ void IRAM_ATTR dmpDataReady();
 Ticker quaternion_timer, gravity_timer, orientation_timer;
 Ticker acceleration_timer, is_moving_timer;
 Ticker temperature_timer;
+
+float _rotator_p_gain = 2.0;
+float _rotator_i_gain = 0.7;
+float _rotator_d_gain = 1.4;
+
+float _stabilizer_p_gain = 0.4;
+float _stabilizer_i_gain = 0.8;
+float _stabilizer_d_gain = 0.3;
 
 float _rotator_prev_delta, _rotator_delta_integral;
 float _stabilizer_prev_delta, _stabilizer_delta_integral;
@@ -271,6 +273,7 @@ void setupAccessPoint() {
 void setupHttpServer() {
   server.serveStatic("/ui", SPIFFS, "/app.html");
   server.serveStatic("/ui/control", SPIFFS, "/app.html");
+  server.serveStatic("/ui/dynamics", SPIFFS, "/app.html");
   server.serveStatic("/ui/autonomy", SPIFFS, "/app.html");
   server.serveStatic("/ui/training", SPIFFS, "/app.html");
   server.serveStatic("/manifest.json", SPIFFS, "/manifest.json");
@@ -299,11 +302,17 @@ void setupHttpServer() {
   server.addHandler(new AsyncCallbackJsonWebHandler("/robot/motors/throttle", handleSetThrottlePercentage));
   server.addHandler(new AsyncCallbackJsonWebHandler("/robot/rotator/left", handleRotateLeft));
   server.addHandler(new AsyncCallbackJsonWebHandler("/robot/rotator/right", handleRotateRight));
+  server.addHandler(new AsyncCallbackJsonWebHandler("/robot/rotator/p", handleSetRotatorPGain));
+  server.addHandler(new AsyncCallbackJsonWebHandler("/robot/rotator/i", handleSetRotatorIGain));
+  server.addHandler(new AsyncCallbackJsonWebHandler("/robot/rotator/d", handleSetRotatorDGain));
   server.addHandler(new AsyncCallbackJsonWebHandler("/robot/autonomy/path-affinity", handleSetPathAffinity));
   server.addHandler(new AsyncCallbackJsonWebHandler("/robot/autonomy/mover/max-overshoot", handleSetMoverMaxOvershoot));
   server.addHandler(new AsyncCallbackJsonWebHandler("/robot/autonomy/mover/learning-rate", handleSetMoverLearningRate));
   server.addHandler(new AsyncCallbackJsonWebHandler("/robot/autonomy/mover/momentum", handleSetMoverMomentum));
   server.addHandler(new AsyncCallbackJsonWebHandler("/robot/autonomy/mover/alpha", handleSetMoverAlpha));
+  server.addHandler(new AsyncCallbackJsonWebHandler("/robot/stabilizer/p", handleSetStabilizerPGain));
+  server.addHandler(new AsyncCallbackJsonWebHandler("/robot/stabilizer/i", handleSetStabilizerIGain));
+  server.addHandler(new AsyncCallbackJsonWebHandler("/robot/stabilizer/d", handleSetStabilizerDGain));
 
   server.addHandler(&sensor_emitter);
   server.addHandler(&training_emitter);
@@ -508,8 +517,8 @@ void loop() {
  * Handle a get robot info request.
  */
 void handleGetRobot(AsyncWebServerRequest *request) {
-  StaticJsonDocument<512> doc;
-  char buffer[512];
+  StaticJsonDocument<640> doc;
+  char buffer[640];
 
   JsonObject robot = doc.createNestedObject("robot");
 
@@ -527,6 +536,12 @@ void handleGetRobot(AsyncWebServerRequest *request) {
   battery["percentage"] = batteryPercentage();
   
   sensors["temperature"] = _temperature;
+
+  JsonObject rotator = robot.createNestedObject("rotator");
+
+  rotator["p"] = _rotator_p_gain;
+  rotator["i"] = _rotator_i_gain;
+  rotator["d"] = _rotator_d_gain;
 
   JsonObject autonomy = robot.createNestedObject("autonomy");
 
@@ -546,6 +561,12 @@ void handleGetRobot(AsyncWebServerRequest *request) {
   importances["battery"] = moverBatteryImportance();
   importances["pitch"] = moverPitchImportance();
   importances["distance"] = moverDistanceImportance();
+
+  JsonObject stabilizer = robot.createNestedObject("stabilizer");
+
+  stabilizer["p"] = _stabilizer_p_gain;
+  stabilizer["i"] = _stabilizer_i_gain;
+  stabilizer["d"] = _stabilizer_d_gain;
   
   serializeJson(doc, buffer);
 
@@ -670,6 +691,57 @@ void handleRotateRight(AsyncWebServerRequest *request, JsonVariant &json) {
 }
 
 /**
+ * Handle the set rotator proportional control gain.
+ */
+void handleSetRotatorPGain(AsyncWebServerRequest *request, JsonVariant &json) {
+  const JsonObject& doc = json.as<JsonObject>();
+
+  if (!doc.containsKey("gain")) {
+    request->send(HTTP_UNPROCESSABLE_ENTITY);
+
+    return;
+  }
+
+  setRotatorPGain(doc["gain"]);
+
+  request->send(HTTP_OK);
+}
+
+/**
+ * Handle the set rotator integral control gain.
+ */
+void handleSetRotatorIGain(AsyncWebServerRequest *request, JsonVariant &json) {
+  const JsonObject& doc = json.as<JsonObject>();
+
+  if (!doc.containsKey("gain")) {
+    request->send(HTTP_UNPROCESSABLE_ENTITY);
+
+    return;
+  }
+
+  setRotatorIGain(doc["gain"]);
+
+  request->send(HTTP_OK);
+}
+
+/**
+ * Handle the set rotator derivative control gain.
+ */
+void handleSetRotatorDGain(AsyncWebServerRequest *request, JsonVariant &json) {
+  const JsonObject& doc = json.as<JsonObject>();
+
+  if (!doc.containsKey("gain")) {
+    request->send(HTTP_UNPROCESSABLE_ENTITY);
+
+    return;
+  }
+
+  setRotatorDGain(doc["gain"]);
+
+  request->send(HTTP_OK);
+}
+
+/**
  * Handle the set path affinity request.
  */
 void handleSetPathAffinity(AsyncWebServerRequest *request, JsonVariant &json) {
@@ -750,6 +822,57 @@ void handleSetMoverAlpha(AsyncWebServerRequest *request, JsonVariant &json) {
   }
 
   setMoverAlpha(doc["alpha"]);
+
+  request->send(HTTP_OK);
+}
+
+/**
+ * Handle the set stabilizer proportional control gain.
+ */
+void handleSetStabilizerPGain(AsyncWebServerRequest *request, JsonVariant &json) {
+  const JsonObject& doc = json.as<JsonObject>();
+
+  if (!doc.containsKey("gain")) {
+    request->send(HTTP_UNPROCESSABLE_ENTITY);
+
+    return;
+  }
+
+  setStabilizerPGain(doc["gain"]);
+
+  request->send(HTTP_OK);
+}
+
+/**
+ * Handle the set stabilizer integral control gain.
+ */
+void handleSetStabilizerIGain(AsyncWebServerRequest *request, JsonVariant &json) {
+  const JsonObject& doc = json.as<JsonObject>();
+
+  if (!doc.containsKey("gain")) {
+    request->send(HTTP_UNPROCESSABLE_ENTITY);
+
+    return;
+  }
+
+  setStabilizerIGain(doc["gain"]);
+
+  request->send(HTTP_OK);
+}
+
+/**
+ * Handle the set stabilizer derivative control gain.
+ */
+void handleSetStabilizerDGain(AsyncWebServerRequest *request, JsonVariant &json) {
+  const JsonObject& doc = json.as<JsonObject>();
+
+  if (!doc.containsKey("gain")) {
+    request->send(HTTP_UNPROCESSABLE_ENTITY);
+
+    return;
+  }
+
+  setStabilizerDGain(doc["gain"]);
 
   request->send(HTTP_OK);
 }
@@ -960,6 +1083,27 @@ void rotate(float radians) {
 }
 
 /**
+ * Set the rotator proportional control gain.
+ */
+void setRotatorPGain(float gain) {
+  _rotator_p_gain = fmax(0.0, gain);
+}
+
+/**
+ * Set the rotator integral control gain.
+ */
+void setRotatorIGain(float gain) {
+  _rotator_i_gain = fmax(0.0, gain);
+}
+
+/**
+ * Set the rotator derivative control gain.
+ */
+void setRotatorDGain(float gain) {
+  _rotator_d_gain = fmax(0.0, gain);
+}
+
+/**
  * Control loop to rotate the vehicle by actuating the motors.
  */
 void rotator() {
@@ -971,9 +1115,9 @@ void rotator() {
       
   float derivative = delta - _rotator_prev_delta;
 
-  float theta = ROTATOR_P_GAIN * delta
-    + ROTATOR_I_GAIN * _rotator_delta_integral
-    + ROTATOR_D_GAIN * derivative;
+  float theta = _rotator_p_gain * delta
+    + _rotator_i_gain * _rotator_delta_integral
+    + _rotator_d_gain * derivative;
 
   float alpha = min(fabs(theta) / PI, 1.0);
 
@@ -1285,6 +1429,27 @@ void enableStabilizer() {
 }
 
 /**
+ * Set the stabilizer proportional control gain.
+ */
+void setStabilizerPGain(float gain) {
+  _stabilizer_p_gain = fmax(0.0, gain);
+}
+
+/**
+ * Set the stabilizer integral control gain.
+ */
+void setStabilizerIGain(float gain) {
+  _stabilizer_i_gain = fmax(0.0, gain);
+}
+
+/**
+ * Set the stabilizer derivative control gain.
+ */
+void setStabilizerDGain(float gain) {
+  _stabilizer_d_gain = fmax(0.0, gain);
+}
+
+/**
  * Disable the linear stabilizer.
  */
 void disableStabilizer() {
@@ -1303,9 +1468,9 @@ void stabilize() {
       
   float derivative = delta - _stabilizer_prev_delta;
 
-  float theta = STABILIZER_P_GAIN * delta
-    + STABILIZER_I_GAIN * _stabilizer_delta_integral
-    + STABILIZER_D_GAIN * derivative;
+  float theta = _stabilizer_p_gain * delta
+    + _stabilizer_i_gain * _stabilizer_delta_integral
+    + _stabilizer_d_gain * derivative;
 
   float beta = min(fabs(theta) / PI, 1.0);
 
@@ -1615,6 +1780,8 @@ float calculateAngleDelta(float start, float target) {
  * What to do when we don't know what to do.
  */
 void panicNow() {
+  Serial.println("Panicking!");
+  
   beep(4);
 
   delay(4 * (BEEP_DURATION + BEEP_DELAY));

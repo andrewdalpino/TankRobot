@@ -1,6 +1,6 @@
 <template>
     <div>
-        <section class="section" v-if="autonomy">
+        <section class="section">
             <div class="container">
                 <div class="buttons">
                     <button class="button is-medium is-outlined is-fullwidth" :class="autonomy.enabled ? 'is-success' : 'is-danger'" @click="toggleAutonomy()">
