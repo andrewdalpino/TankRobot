@@ -1343,7 +1343,7 @@ void mover() {
 
     float dydw;
 
-    for (uint8_t i = 0; i < 5; ++i) {
+    for (uint8_t i = 0; i < 4; ++i) {
       dydw = dydl * _mover_features[i];
       
       dydw += _mover_alpha * _mover_weights[i];
@@ -1369,7 +1369,7 @@ void mover() {
       StaticJsonDocument<256> doc;
       char buffer[256];
   
-      float loss = sq(_mover_prediction - delta);
+      float loss = sq(dydl);
 
       doc["epoch"] = _mover_epoch;
       doc["loss"] = loss;
