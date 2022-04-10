@@ -178,7 +178,7 @@ export default Vue.extend({
         },
         stop() : void {
             if (this.isMoving) {
-                this.$http.delete('/robot/motors').then((response) => {
+                this.$http.delete('/robot/motors').then(() => {
                     bus.$emit('stopped');
                 }).catch((error) => {
                     bus.$emit('communication-error', {

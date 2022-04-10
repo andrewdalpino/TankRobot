@@ -36,27 +36,18 @@ export default Vue.extend({
         return {
             sound: null,
             open: false,
-            voltage: null,
+            voltage: undefined,
         };
     },
-    mounted() {
-        const element = document.getElementById('plucky');
-
-        if (element instanceof HTMLAudioElement) {
-            this.sound = element;
-        }
-
-        bus.$on('battery-undervoltage', (event) => {
+    methods: {
+        handleBatteryUndervoltage() : void {
             if (!this.open) {
-                this.voltage = event.voltage;
                 this.open = true;
 
                 this.beep();
                 this.vibrate();
             }
-        });
-    },
-    methods: {
+        },
         beep() : void {
             if (this.sound) {
                 this.sound.play();
@@ -65,6 +56,15 @@ export default Vue.extend({
         vibrate() : void {
             window.navigator.vibrate(VIBRATE_PATTERN);
         },
+    },
+    mounted() {
+        const element = document.getElementById('plucky');
+
+        if (element instanceof HTMLAudioElement) {
+            this.sound = element;
+        }
+
+        bus.$on('battery-undervoltage', this.handleBatteryUndervoltage);
     },
 });
 </script>

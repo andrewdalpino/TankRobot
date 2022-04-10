@@ -9,7 +9,7 @@
                     </span>
                 </div>
                 <p class="block is-size-5">
-                    A rollover was detected. Check the orientation of the vehicle.
+                    A rollover was detected. Check the orientation of the robot.
                 </p>
                 <div class="block buttons is-centered">
                     <button class="button is-danger is-outlined" @click="open = false">
@@ -35,23 +35,15 @@ export default Vue.extend({
             open: false,
         };
     },
-    mounted() {
-        const element = document.getElementById('plucky');
-
-        if (element instanceof HTMLAudioElement) {
-            this.sound = element;
-        }
-
-        bus.$on('rollover-detected', () => {
+    methods: {
+        handleRolloverDetected() : void {
             if (!this.open) {
                 this.open = true;
 
                 this.beep();
                 this.vibrate();
             }
-        });
-    },
-    methods: {
+        },
         beep() : void {
             if (this.sound) {
                 this.sound.play();
@@ -60,6 +52,15 @@ export default Vue.extend({
         vibrate() : void {
             window.navigator.vibrate(VIBRATE_PATTERN);
         },
+    },
+    mounted() {
+        const element = document.getElementById('plucky');
+
+        if (element instanceof HTMLAudioElement) {
+            this.sound = element;
+        }
+
+        bus.$on('rollover-detected', this.handleRolloverDetected);
     },
 });
 </script>

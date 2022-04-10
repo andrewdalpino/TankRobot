@@ -3,8 +3,7 @@
     font-style: normal;
     font-weight: 300;
     font-display: swap;
-    src: url('../fonts/Roboto-300.woff2') format('woff2'),
-        url('../fonts/Roboto-300.woff') format('woff');
+    src: url('../fonts/Roboto-300.woff2') format('woff2');
 }
 
 @font-face {
@@ -12,8 +11,7 @@
     font-style: normal;
     font-weight: 400;
     font-display: swap;
-    src: url('../fonts/Roboto-regular.woff2') format('woff2'),
-        url('../fonts/Roboto-regular.woff') format('woff');
+    src: url('../fonts/Roboto-regular.woff2') format('woff2');
 }
 
 @font-face {
@@ -21,8 +19,7 @@
     font-style: normal;
     font-weight: 500;
     font-display: swap;
-    src: url('../fonts/Roboto-500.woff2') format('woff2'),
-        url('../fonts/Roboto-500.woff') format('woff');
+    src: url('../fonts/Roboto-500.woff2') format('woff2');
 }
 
 /*!
@@ -30,15 +27,14 @@
  * License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License)
  */
 @font-face {
-    font-family: "Font Awesome 5 Free";
+    font-family: "Font Awesome 6 Free";
     font-style: normal;
     font-weight: 900;
     font-display: auto;
-    src: url(~@fortawesome/fontawesome-free/webfonts/fa-solid-900.woff2) format('woff2'),
-        url(~@fortawesome/fontawesome-free/webfonts/fa-solid-900.woff) format('woff');
+    src: url(~@fortawesome/fontawesome-free/webfonts/fa-solid-900.woff2) format('woff2');
 }
 
 .fa, .fas {
-    font-family: "Font Awesome 5 Free";
+    font-family: "Font Awesome 6 Free";
     font-weight: 900;
 }

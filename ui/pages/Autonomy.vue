@@ -2,10 +2,12 @@
     <div>
         <section class="section">
             <div class="container">
-                <div class="buttons">
-                    <button class="button is-medium is-outlined is-fullwidth" :class="autonomy.enabled ? 'is-success' : 'is-danger'" @click="toggleAutonomy()">
-                        Autonomy {{ autonomy.enabled ? 'Enabled' : 'Disabled' }}
-                    </button>
+                <div class="field">
+                    <div class="control">
+                        <button class="button is-medium is-outlined is-fullwidth" :class="autonomy.enabled ? 'is-success' : 'is-danger'" @click="toggleAutonomy()">
+                            Autonomy {{ autonomy.enabled ? 'Enabled' : 'Disabled' }}
+                        </button>
+                    </div>
                 </div>
             </div>
         </section>
@@ -111,13 +113,13 @@ export default Vue.extend({
     data() {
         return {
             autonomy: {
-                enabled: false,
-                pathAffinity: 2.0,
+                enabled: undefined,
+                pathAffinity: undefined,
                 mover: {
-                    learningRate: 0.1,
-                    momentum: 0.9,
-                    alpha: 1e-4,
-                    maxOvershoot: 0.3,
+                    learningRate: undefined,
+                    momentum: undefined,
+                    alpha: undefined,
+                    maxOvershoot: undefined,
                 },
             },
             loading: false,
@@ -197,7 +199,15 @@ export default Vue.extend({
         this.loading = true;
 
         this.$http.get('/robot').then((response) => {
-            this.autonomy = response.data.robot.autonomy;
+            const robot = response.data.robot;
+
+            this.autonomy.enabled = robot.autonomy.enabled;
+            this.autonomy.pathAffinity = robot.autonomy.pathAffinity;
+            this.autonomy.mover.maxOvershoot = robot.autonomy.maxOvershoot;
+            this.autonomy.mover.learningRate = robot.autonomy.mover.learningRate;
+            this.autonomy.mover.momentum = robot.autonomy.mover.momentum;
+            this.autonomy.mover.alpha = robot.autonomy.mover.alpha;
+
 
             this.loading = false;
         }).catch((error) => {

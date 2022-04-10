@@ -4,15 +4,15 @@
             <div class="container">
                 <div class="columns">
                     <div class="column is-half">
-                        <h2 class="title is-size-4">Feature Importances</h2>
-                        <figure class="image is-square">
-                            <div id="feature-importances-chart" class="has-ratio"></div>
-                        </figure>
-                    </div>
-                    <div class="column is-half">
                         <h2 class="title is-size-4">Training Loss</h2>
                         <figure class="image is-square">
                             <div id="training-loss-chart" class="has-ratio"></div>
+                        </figure>
+                    </div>
+                    <div class="column is-half">
+                        <h2 class="title is-size-4">Feature Importances</h2>
+                        <figure class="image is-square">
+                            <div id="feature-importances-chart" class="has-ratio"></div>
                         </figure>
                     </div>
                 </div>
@@ -34,6 +34,39 @@ export default Vue.extend({
         return {
             loading: false,
         };
+    },
+    methods: {
+        handleMoverEpochComplete(event) : void {
+            Plotly.extendTraces('training-loss-chart', {x: [[event.epoch]], y: [[event.loss]]}, [0], DATASET_SIZE);
+
+            Plotly.react('feature-importances-chart', [{
+                values: Object.values(event.importances),
+                labels: ['Throttle', 'Battery', 'Pitch', 'Distance'],
+                type: 'pie',
+                textinfo: 'label+percent',
+            }], {
+                showlegend: false,
+                margin: {
+                    l: 32,
+                    r: 32,
+                    t: 32,
+                    b: 32,
+                },
+                paper_bgcolor: 'rgba(0, 0, 0, 0)',
+                plot_bgcolor: 'rgba(0, 0, 0, 0)',
+                modebar: {
+                    color: 'rgb(128, 128, 128)',
+                    activecolor: 'rgb(192, 192, 192)',
+                    bgcolor: 'rgba(0, 0, 0, 0)',
+                },
+            }, {
+                responsive: true,
+                displaylogo: false,
+                modeBarButtons: [
+                    ['toImage'],
+                ],
+            });
+        },
     },
     mounted() {
         this.loading = true;
@@ -131,37 +164,7 @@ export default Vue.extend({
                     ],
                 });
 
-                sse.subscribe('mover-epoch-complete', (event) => {
-                    Plotly.react('feature-importances-chart', [{
-                        values: Object.values(event.importances),
-                        labels: ['Throttle', 'Battery', 'Pitch', 'Distance'],
-                        type: 'pie',
-                        textinfo: 'label+percent',
-                    }], {
-                        showlegend: false,
-                        margin: {
-                            l: 32,
-                            r: 32,
-                            t: 32,
-                            b: 32,
-                        },
-                        paper_bgcolor: 'rgba(0, 0, 0, 0)',
-                        plot_bgcolor: 'rgba(0, 0, 0, 0)',
-                        modebar: {
-                            color: 'rgb(128, 128, 128)',
-                            activecolor: 'rgb(192, 192, 192)',
-                            bgcolor: 'rgba(0, 0, 0, 0)',
-                        },
-                    }, {
-                        responsive: true,
-                        displaylogo: false,
-                        modeBarButtons: [
-                            ['toImage'],
-                        ],
-                    });
-
-                    Plotly.extendTraces('training-loss-chart', {x: [[event.epoch]], y: [[event.loss]]}, [0], DATASET_SIZE);
-                });
+                sse.subscribe('mover-epoch-complete', this.handleMoverEpochComplete);
 
                 this.loading = false;
             });

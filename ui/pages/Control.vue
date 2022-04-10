@@ -34,27 +34,75 @@ import bus from '../providers/bus';
 export default Vue.extend({
     data() {
         return {
-            motors: undefined,
-            sensors: undefined,
+            motors: {
+                direction: null,
+                throttle: 50,
+                stopped: true,
+            },
+            sensors: {
+                battery: {
+                    voltage: undefined,
+                    percentage: undefined,
+                },
+                temperature: undefined,
+            },
             loading: false,
         };
+    },
+    methods: {
+        handleMovingForward() : void {
+            this.motors.direction = FORWARD;
+            this.motors.stopped = false;
+        },
+        handleMovingLeft() : void {
+            this.motors.direction = LEFT;
+            this.motors.stopped = false;
+        },
+        handleMovingRight() : void {
+            this.motors.direction = RIGHT;
+            this.motors.stopped = false;
+        },
+        handleMovingReverse() : void {
+            this.motors.direction = REVERSE;
+            this.motors.stopped = false;
+        },
+        handleStopped() : void {
+            this.motors.direction = null;
+            this.motors.stopped = true;
+        },
+        handleThrottleUpdated(event) : void {
+            this.motors.throttle = event.throttle;
+        },
+        handleBatteryVoltageUpdated(event) : void {
+            this.sensors.battery.voltage = event.voltage;
+            this.sensors.battery.percentage = event.percentage;
+        },
+        handleTemperatureUpdated(event) : void {
+            this.sensors.temperature = event.temperature;
+        },
+        handleAutonomyEnabled() : void {
+            this.motors.direction = null;
+            this.motors.stopped = true;
+        },
     },
     mounted() {
         this.loading = true;
 
         this.$http.get('/robot').then((response) => {
-            this.motors = response.data.robot.motors;
-            this.sensors = response.data.robot.sensors;
+            const robot = response.data.robot;
+
+            this.motors.direction = robot.motors.direction;
+            this.motors.throttle = robot.motors.throttle;
+            this.motors.stopped = robot.motors.stopped;
+
+            this.sensors.battery.voltage = robot.sensors.battery.voltage;
+            this.sensors.battery.percentage = robot.sensors.battery.percentage;
+
+            this.sensors.temperature = robot.sensors.temperature;
 
             this.$sse('/events/robot/sensors', { format: 'json' }).then((sse) => {
-                sse.subscribe('battery-voltage-updated', (event) => {
-                    this.sensors.battery.voltage = event.voltage;
-                    this.sensors.battery.percentage = event.percentage;
-                });
-
-                sse.subscribe('temperature-updated', (event) => {
-                    this.sensors.temperature = event.temperature;
-                });
+                sse.subscribe('battery-voltage-updated', this.handleBatteryVoltageUpdated);
+                sse.subscribe('temperature-updated', this.handleTemperatureUpdated);
 
                 this.loading = false;
             });
@@ -64,39 +112,13 @@ export default Vue.extend({
             });
         });
 
-        bus.$on('moving-forward', () => {
-            this.motors.direction = FORWARD;
-            this.motors.stopped = false;
-        });
-
-        bus.$on('moving-left', () => {
-            this.motors.direction = LEFT;
-            this.motors.stopped = false;
-        });
-
-        bus.$on('moving-right', () => {
-            this.motors.direction = RIGHT;
-            this.motors.stopped = false;
-        });
-
-        bus.$on('moving-reverse', () => {
-            this.motors.direction = REVERSE;
-            this.motors.stopped = false;
-        });
-
-        bus.$on('stopped', () => {
-            this.motors.direction = null;
-            this.motors.stopped = true;
-        });
-
-        bus.$on('throttle-updated', (event) => {
-            this.motors.throttle = event.throttle;
-        });
-        
-        bus.$on('autonomy-enabled', () => {
-            this.motors.direction = null;
-            this.motors.stopped = true;
-        });
+        bus.$on('moving-forward', this.handleMovingForward);
+        bus.$on('moving-left', this.handleMovingLeft);
+        bus.$on('moving-right', this.handleMovingRight);
+        bus.$on('moving-reverse', this.handleMovingReverse);
+        bus.$on('stopped', this.handleStopped);
+        bus.$on('throttle-updated', this.handleThrottleUpdated);
+        bus.$on('autonomy-enabled', this.handleAutonomyEnabled);
     },
 });
 </script>

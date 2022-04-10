@@ -46,24 +46,15 @@ export default Vue.extend({
             message: 'Unknown error.',
         };
     },
-    mounted() {
-        const element = document.getElementById('plucky');
-
-        if (element instanceof HTMLAudioElement) {
-            this.sound = element;
-        }
-
-        bus.$on('communication-error', (event) => {
+    methods: {
+        handleCommunicationError() : void {
             if (!this.open) {
-                this.message = event.error.message;
                 this.open = true;
 
                 this.beep();
                 this.vibrate();
             }
-        });
-    },
-    methods: {
+        },
         beep() : void {
             if (this.sound) {
                 this.sound.play();
@@ -72,6 +63,15 @@ export default Vue.extend({
         vibrate() : void {
             window.navigator.vibrate(VIBRATE_PATTERN);
         },
+    },
+    mounted() {
+        const element = document.getElementById('plucky');
+
+        if (element instanceof HTMLAudioElement) {
+            this.sound = element;
+        }
+
+        bus.$on('communication-error', this.handleCommunicationError);
     },
 });
 </script>
