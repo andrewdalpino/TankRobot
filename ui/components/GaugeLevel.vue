@@ -44,10 +44,8 @@ export default Vue.extend({
         visibilityIndicator() : string {
             const visibility = this.sensors.lidar.visibility;
 
-            if (visibility > 0.66) {
+            if (visibility > 0.5) {
                 return 'fa-eye';
-            } else if (visibility > 0.33) {
-                return 'fa-eye-slash';
             } else {
                 return 'fa-eye-low-vision';
             }
