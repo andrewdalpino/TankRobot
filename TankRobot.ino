@@ -68,9 +68,9 @@
 #define TEMPERATURE_CONSTANT 36.53
 
 #define ROTATOR_SAMPLE_RATE ORIENTATION_SAMPLE_RATE
-#define ROTATOR_THRESHOLD 1.0 * DEG_TO_RAD
+#define ROTATOR_THRESHOLD 1.5 * DEG_TO_RAD
 
-#define STABILIZER_SAMPLE_RATE 50
+#define STABILIZER_SAMPLE_RATE ORIENTATION_SAMPLE_RATE
 
 #define LIDAR_ADDRESS 0x52
 #define LIDAR_TIMEOUT 500
@@ -82,14 +82,16 @@
 #define LIDAR_NOISY_SIGNAL 1
 #define LIDAR_SIGNAL_FAILURE 2
 #define LIDAR_PHASE_OUT_OF_BOUNDS 4
+#define VISIBILITY_SAMPLE_RATE 1000
 
 #define EXPLORE_SAMPLE_RATE 250
 
 #define SCAN_SAMPLE_RATE LIDAR_SAMPLE_RATE
-#define SCAN_WINDOW 0.75 * PI
+#define SCAN_WINDOW 0.7 * PI
 #define NUM_SCANS 4
 
 #define MOVER_SAMPLE_RATE LIDAR_SAMPLE_RATE
+#define MOVER_MAX_ACTIVATION 5000.0
 
 #define COLLISION_SAMPLE_RATE LIDAR_SAMPLE_RATE
 #define COLLISION_THRESHOLD 350
@@ -159,16 +161,17 @@ VL53L1X lidar;
 float _scan_angles[NUM_SCANS];
 float _angle_visibilities[NUM_SCANS];
 unsigned int _distances_to_object[NUM_SCANS];
+uint8_t _scan_direction = LEFT;
 uint8_t _scan_count;
 
-Ticker scan_timer, collision_timer;
+Ticker scan_timer, collision_timer, visibility_timer;
 
 float _path_affinity = 2.0;
 
 float _mover_learning_rate = 0.1;
 float _mover_momentum = 0.9;
 float _mover_alpha = 1e-4;
-float _mover_max_overshoot = 0.3;
+float _mover_max_overshoot = 0.2;
 float _mover_features[4];
 float _mover_weights[4];
 float _mover_weight_velocities[4];
@@ -271,6 +274,24 @@ void setupAccessPoint() {
  * Set up the HTTP server.
  */
 void setupHttpServer() {
+  setupStaticRoutes();
+
+  setupApiRoutes();
+
+  setupEventEmitters();
+
+  server.onNotFound(handleNotFound);
+
+  server.begin();
+
+  Serial.print("HTTP server listening on port ");
+  Serial.println(HTTP_PORT);
+}
+
+/**
+ * Set up the HTTP static routes.
+ */
+void setupStaticRoutes() {
   server.serveStatic("/ui", SPIFFS, "/app.html");
   server.serveStatic("/ui/control", SPIFFS, "/app.html");
   server.serveStatic("/ui/dynamics", SPIFFS, "/app.html");
@@ -283,21 +304,16 @@ void setupHttpServer() {
   server.serveStatic("/images/app-icon-small.png", SPIFFS, "/images/app-icon-small.png");
   server.serveStatic("/images/app-icon-large.png", SPIFFS, "/images/app-icon-large.png");
   server.serveStatic("/fonts/Roboto-300.woff2", SPIFFS, "/fonts/Roboto-300.woff2");
-  server.serveStatic("/fonts/Roboto-300.woff", SPIFFS, "/fonts/Roboto-300.woff");
   server.serveStatic("/fonts/Roboto-regular.woff2", SPIFFS, "/fonts/Roboto-regular.woff2");
-  server.serveStatic("/fonts/Roboto-regular.woff", SPIFFS, "/fonts/Roboto-regular.woff");
   server.serveStatic("/fonts/Roboto-500.woff2", SPIFFS, "/fonts/Roboto-500.woff2");
-  server.serveStatic("/fonts/Roboto-500.woff", SPIFFS, "/fonts/Roboto-500.woff");
   server.serveStatic("/fonts/fa-solid-900.woff2", SPIFFS, "/fonts/fa-solid-900.woff2");
-  server.serveStatic("/fonts/fa-solid-900.woff", SPIFFS, "/fonts/fa-solid-900.woff");
   server.serveStatic("/sounds/plucky.ogg", SPIFFS, "/sounds/plucky.ogg");
+}
 
-  server.on("/robot", HTTP_GET, handleGetRobot);
-  server.on("/robot/motors", HTTP_DELETE, handleStop);
-  server.on("/robot/features/beeper", HTTP_PUT, handleBeep);
-  server.on("/robot/autonomy/enabled", HTTP_PUT, handleExplore);
-  server.on("/robot/autonomy", HTTP_DELETE, handleStop);
-
+/**
+ * Set up the HTTP API routes.
+ */
+void setupApiRoutes() {
   server.addHandler(new AsyncCallbackJsonWebHandler("/robot/motors/direction", handleChangeDirection));
   server.addHandler(new AsyncCallbackJsonWebHandler("/robot/motors/throttle", handleSetThrottlePercentage));
   server.addHandler(new AsyncCallbackJsonWebHandler("/robot/rotator/left", handleRotateLeft));
@@ -314,16 +330,20 @@ void setupHttpServer() {
   server.addHandler(new AsyncCallbackJsonWebHandler("/robot/stabilizer/i", handleSetStabilizerIGain));
   server.addHandler(new AsyncCallbackJsonWebHandler("/robot/stabilizer/d", handleSetStabilizerDGain));
 
+  server.on("/robot", HTTP_GET, handleGetRobot);
+  server.on("/robot/motors", HTTP_DELETE, handleStop);
+  server.on("/robot/features/beeper", HTTP_PUT, handleBeep);
+  server.on("/robot/autonomy/enabled", HTTP_PUT, handleExplore);
+  server.on("/robot/autonomy", HTTP_DELETE, handleStop);
+}
+
+/**
+ * Set up the HTTP event emitters.
+ */
+void setupEventEmitters() {
   server.addHandler(&sensor_emitter);
   server.addHandler(&training_emitter);
   server.addHandler(&malfunction_emitter);
-
-  server.onNotFound(handleNotFound);
-
-  server.begin();
-
-  Serial.print("HTTP server listening on port ");
-  Serial.println(HTTP_PORT);
 }
 
 /**
@@ -417,7 +437,7 @@ void setupMPU() {
  */
 void setupLidar() {
   lidar.setTimeout(LIDAR_TIMEOUT);
-  
+
   if (lidar.init()) {
     Serial.println("Lidar initialized");
   } else {
@@ -429,6 +449,8 @@ void setupLidar() {
   lidar.setDistanceMode(VL53L1X::Long);
   lidar.setMeasurementTimingBudget(LIDAR_TIMING_BUDGET);
   lidar.startContinuous(LIDAR_SAMPLE_RATE);
+
+  visibility_timer.attach_ms(VISIBILITY_SAMPLE_RATE, updateVisibility);
 }
 
 /**
@@ -517,8 +539,8 @@ void loop() {
  * Handle a get robot info request.
  */
 void handleGetRobot(AsyncWebServerRequest *request) {
-  StaticJsonDocument<640> doc;
-  char buffer[640];
+  StaticJsonDocument<768> doc;
+  char buffer[768];
 
   JsonObject robot = doc.createNestedObject("robot");
 
@@ -533,7 +555,11 @@ void handleGetRobot(AsyncWebServerRequest *request) {
   JsonObject battery = sensors.createNestedObject("battery");
 
   battery["voltage"] = _battery_voltage;
-  battery["percentage"] = batteryPercentage();
+  battery["capacity"] = batteryCapacity();
+
+  JsonObject lidar = sensors.createNestedObject("lidar");
+
+  lidar["visibility"] = visibility();
   
   sensors["temperature"] = _temperature;
 
@@ -984,10 +1010,10 @@ void brake() {
 }
 
 /**
- * Returns the battery voltage as a percentage.
+ * Returns the current power capacity of the battery.
  */
-float batteryPercentage() {
-  return (_battery_voltage - MIN_VOLTAGE) / (MAX_VOLTAGE - MIN_VOLTAGE) * 100.0;
+float batteryCapacity() {
+  return (_battery_voltage - MIN_VOLTAGE) / (MAX_VOLTAGE - MIN_VOLTAGE);
 }
 
 /**
@@ -1210,7 +1236,13 @@ void explorer() {
  * Scan the environment.
  */
 void scanEnvironment() {
-  rotateRight(0.5 * SCAN_WINDOW);
+  _scan_direction = random(LEFT, RIGHT);
+
+  if (_scan_direction == LEFT) {
+    rotateRight(0.5 * SCAN_WINDOW);
+  } else {
+    rotateLeft(0.5 * SCAN_WINDOW);
+  }
     
   _scan_count = 0;
 
@@ -1221,6 +1253,8 @@ void scanEnvironment() {
  * Control loop to scan the environment for objects.
  */
 void scanner() {
+  float radians;
+  
   if (!rotator_timer.active() && !_is_moving) {
     _scan_angles[_scan_count] = _heading;
     _angle_visibilities[_scan_count] = visibility();
@@ -1229,7 +1263,13 @@ void scanner() {
     ++_scan_count;
     
     if (_scan_count < NUM_SCANS) {
-      rotateLeft(SCAN_WINDOW / (NUM_SCANS - 1));
+      radians = SCAN_WINDOW / (NUM_SCANS - 1);
+      
+      if (_scan_direction == LEFT) {
+        rotateLeft(radians);
+      } else {
+        rotateRight(radians);
+      }
     } else {
       scan_timer.detach();
     }
@@ -1280,31 +1320,28 @@ void choosePath() {
  */
 void move() {
   _mover_features[0] = throttlePercentage() / 100.0;
-  _mover_features[1] = batteryPercentage() / 100.0;
+  _mover_features[1] = batteryCapacity() / 100.0;
   _mover_features[2] = _pitch / HALF_PI;
   _mover_features[3] = distanceToObject() / (float) LIDAR_MAX_RANGE;
 
-  float delta = 0.0;
+  float z = dot(_mover_features, _mover_weights, 4);
+  
+  z += _mover_bias;
 
-  for (uint8_t i = 0; i < 4; ++i) {
-    delta += _mover_features[i] * _mover_weights[i];
-  }
-
-  delta += _mover_bias;
+  float activation = fmax(0.0, fmin(z, MOVER_MAX_ACTIVATION));
 
   unsigned long now = millis();
 
-  _mover_prediction = delta;
-
-  _mover_start_timestamp = now;
-
-  long max_overshoot = round(_mover_max_overshoot * fabs(delta));
+  long max_overshoot = round(_mover_max_overshoot * fabs(z));
 
   long overshoot = random(0, max_overshoot);
 
-  long burn_time = round(fmax(0.0, delta)) + overshoot;
-  
+  long burn_time = round(activation) + overshoot;
+
+  _mover_start_timestamp = now;
   _mover_end_timestamp = now + burn_time;
+
+  _mover_prediction = activation;
 
   _direction = FORWARD;
   
@@ -1330,12 +1367,6 @@ void mover() {
     brake();
 
     mover_timer.detach();
-
-    if (collision) {
-      beep(2);
-      
-      reverse(300);
-    }
 
     float delta = now - _mover_start_timestamp;
 
@@ -1385,6 +1416,10 @@ void mover() {
 
       training_emitter.send(buffer, "mover-epoch-complete");
     }
+  }
+
+  if (collision) {
+    reverse(300);
   }
 }
 
@@ -1592,7 +1627,7 @@ void updateBattery() {
       char buffer[64];
   
       doc["voltage"] = _battery_voltage;
-      doc["percentage"] = batteryPercentage();
+      doc["capacity"] = batteryCapacity();
   
       serializeJson(doc, buffer);
     
@@ -1616,6 +1651,22 @@ void updateTemperature() {
     serializeJson(doc, buffer);
 
     sensor_emitter.send(buffer, "temperature-updated");
+  }
+}
+
+/**
+ * Update the lidar visibility reading.
+ */
+void updateVisibility() {  
+  if (sensor_emitter.count() > 0) {
+    StaticJsonDocument<64> doc;
+    char buffer[64];
+     
+    doc["visibility"] = visibility();
+  
+    serializeJson(doc, buffer);
+
+    sensor_emitter.send(buffer, "visibility-updated");
   }
 }
 
@@ -1732,7 +1783,7 @@ unsigned int distanceToObject() {
 }
 
 /**
- * Return the lidar visibility.
+ * Return the current lidar visibility.
  */
 float visibility() {
   float signal = lidar.ranging_data.peak_signal_count_rate_MCPS;
@@ -1742,6 +1793,19 @@ float visibility() {
   float total = signal + noise;
 
   return signal / total;
+}
+
+/**
+ * Calculate the dot product of two equi-length arrays.
+ */
+float dot(float a[], float b[], uint8_t n) {
+  float sigma = 0.0;
+
+  for (uint8_t i = 0; i < n; ++i) {
+    sigma += a[i] * b[i];
+  }
+
+  return sigma;
 }
 
 /**

@@ -36,13 +36,16 @@ export default Vue.extend({
         return {
             motors: {
                 direction: null,
-                throttle: 50,
+                throttle: undefined,
                 stopped: true,
             },
             sensors: {
+                lidar: {
+                    visibility: undefined,
+                },
                 battery: {
                     voltage: undefined,
-                    percentage: undefined,
+                    capacity: undefined,
                 },
                 temperature: undefined,
             },
@@ -75,7 +78,10 @@ export default Vue.extend({
         },
         handleBatteryVoltageUpdated(event) : void {
             this.sensors.battery.voltage = event.voltage;
-            this.sensors.battery.percentage = event.percentage;
+            this.sensors.battery.capacity = event.capacity;
+        },
+        handleVisibilityUpdated(event) : void {
+            this.sensors.lidar.visibility = event.visibility;
         },
         handleTemperatureUpdated(event) : void {
             this.sensors.temperature = event.temperature;
@@ -95,12 +101,15 @@ export default Vue.extend({
             this.motors.throttle = robot.motors.throttle;
             this.motors.stopped = robot.motors.stopped;
 
+            this.sensors.lidar.visibility = robot.sensors.lidar.visibility;
+
             this.sensors.battery.voltage = robot.sensors.battery.voltage;
-            this.sensors.battery.percentage = robot.sensors.battery.percentage;
+            this.sensors.battery.capacity = robot.sensors.battery.capacity;
 
             this.sensors.temperature = robot.sensors.temperature;
 
             this.$sse('/events/robot/sensors', { format: 'json' }).then((sse) => {
+                sse.subscribe('visibility-updated', this.handleVisibilityUpdated);
                 sse.subscribe('battery-voltage-updated', this.handleBatteryVoltageUpdated);
                 sse.subscribe('temperature-updated', this.handleTemperatureUpdated);
 

@@ -4,7 +4,7 @@
             <div class="container">
                 <div class="field">
                     <div class="control">
-                        <button class="button is-medium is-outlined is-fullwidth" :class="autonomy.enabled ? 'is-success' : 'is-danger'" @click="toggleAutonomy()">
+                        <button class="button is-medium is-outlined is-fullwidth" :class="autonomy.enabled ? 'is-success' : 'is-danger'" @click="toggle()">
                             Autonomy {{ autonomy.enabled ? 'Enabled' : 'Disabled' }}
                         </button>
                     </div>
@@ -13,6 +13,7 @@
         </section>
         <section class="section">
             <div class="container">
+                <h2 class="title">Scanner</h2>
                 <div class="field">
                     <label class="label">Path Affinity</label>
                     <div class="control">
@@ -29,6 +30,11 @@
                         <output for="path-affinity-slider">{{ autonomy.pathAffinity }}</output>
                     </div>
                 </div>
+            </div>
+        </section>
+        <section class="section">
+            <div class="container">
+                <h2 class="title">Mover</h2>
                 <div class="field">
                     <label class="label">Max Overshoot</label>
                     <div class="control">
@@ -38,7 +44,7 @@
                             type="range"
                             min="0.0"
                             max="1.0"
-                            step="0.1"
+                            step="0.01"
                             v-model="autonomy.mover.maxOvershoot"
                             @change="setMaxOvershoot()"
                         />
@@ -73,7 +79,7 @@
                             type="range"
                             min="0.0"
                             max="1.0"
-                            step="0.1"
+                            step="0.01"
                             v-model="autonomy.mover.momentum"
                             @change="setMomentum()"
                         />
@@ -116,17 +122,17 @@ export default Vue.extend({
                 enabled: undefined,
                 pathAffinity: undefined,
                 mover: {
+                    maxOvershoot: undefined,
                     learningRate: undefined,
                     momentum: undefined,
                     alpha: undefined,
-                    maxOvershoot: undefined,
                 },
             },
             loading: false,
         };
     },
     methods: {
-        toggleAutonomy() : void {
+        toggle() : void {
             if (this.autonomy.enabled) {
                 this.$http.delete('/robot/autonomy').then(() => {
                     this.autonomy.enabled = false;

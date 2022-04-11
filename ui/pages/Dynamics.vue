@@ -2,8 +2,9 @@
     <div>
         <section class="section">
             <div class="container">
+                <h2 class="title">Rotator</h2>
                 <div class="field">
-                    <label class="label">Rotator P Gain</label>
+                    <label class="label">Proportional Gain</label>
                     <div class="control">
                         <input class="slider is-fullwidth is-large has-output"
                             name="rotator-p-gain"
@@ -19,7 +20,7 @@
                     </div>
                 </div>
                 <div class="field">
-                    <label class="label">Rotator I Gain</label>
+                    <label class="label">Integral Gain</label>
                     <div class="control">
                         <input class="slider is-fullwidth is-large has-output"
                             name="rotator-i-gain"
@@ -35,7 +36,7 @@
                     </div>
                 </div>
                 <div class="field">
-                    <label class="label">Rotator D Gain</label>
+                    <label class="label">Derivative Gain</label>
                     <div class="control">
                         <input class="slider is-fullwidth is-large has-output"
                             name="rotator-d-gain"
@@ -50,8 +51,13 @@
                         <output for="rotator-d-gain-slider">{{ rotator.d }}</output>
                     </div>
                 </div>
+            </div>
+        </section>
+        <section class="section">
+            <div class="container">
+                <h2 class="title">Stabilizer</h2>
                 <div class="field">
-                    <label class="label">Stabilizer P Gain</label>
+                    <label class="label">Proportional Gain</label>
                     <div class="control">
                         <input class="slider is-fullwidth is-large has-output"
                             name="stabilizer-p-gain"
@@ -67,7 +73,7 @@
                     </div>
                 </div>
                 <div class="field">
-                    <label class="label">Stabilizer I Gain</label>
+                    <label class="label">Integral Gain</label>
                     <div class="control">
                         <input class="slider is-fullwidth is-large has-output"
                             name="stabilizer-i-gain"
@@ -83,7 +89,7 @@
                     </div>
                 </div>
                 <div class="field">
-                    <label class="label">Stabilizer D Gain</label>
+                    <label class="label">Derivative Gain</label>
                     <div class="control">
                         <input class="slider is-fullwidth is-large has-output"
                             name="stabilizer-d-gain"
